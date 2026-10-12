@@ -1,0 +1,53 @@
+# Rules for formulaic structure, introductions, conclusions, and structural patterns
+# Sources: shir-danishyar/humanize (P1-P12), ameenmo/humanize-skill (Structural tells)
+version: 1
+category: ai_patterns
+
+rules:
+  - id: structure.intro.fast_paced
+    severity: error
+    pattern: "(?i)\\b(?:in\\s+today'?s\\s+(?:fast-paced|dynamic|connected|data-driven)\\s+world|in\\s+the\\s+digital\\s+age|now\\s+more\\s+than\\s+ever)\\b"
+    message: "Formulaic throat-clearing introduction."
+    suggestion: "Delete the sentence and begin directly with your core assertion."
+
+  - id: structure.intro.picture_this
+    severity: warning
+    pattern: "(?i)\\b(?:picture\\s+this|let'?s\\s+dive\\s+in|let'?s\\s+explore)\\b"
+    message: "Formulaic conversational greeting/opener."
+    suggestion: "State the subject or problem directly without staged transitions."
+
+  - id: structure.closer.formulaic
+    severity: error
+    pattern: "(?i)\\b(?:in\\s+conclusion|in\\s+summary|at\\s+the\\s+end\\s+of\\s+the\\s+day|all\\s+in\\s+all|the\\s+bottom\\s+line\\s+is)\\b"
+    message: "Formulaic essay conclusion marker."
+    suggestion: "Omit the transition word. End on a concrete recommendation or next step."
+
+  - id: structure.closer.bright_future
+    severity: warning
+    pattern: "(?i)\\b(?:the\\s+future\\s+(?:looks|is)\\s+bright|only\\s+time\\s+will\\s+tell|the\\s+possibilities\\s+are\\s+endless)\\b"
+    message: "Clichéd platitude concluding sentence."
+    suggestion: "Conclude with specific facts, milestones, or deliverables."
+
+  - id: structure.negative_parallelism
+    severity: error
+    pattern: "(?i)\\b(?:it'?s\\s+not\\s+(?:just\\s+)?[^,.;]+,\\s*it'?s|this\\s+isn'?t\\s+(?:about\\s+)?[^,.;]+[.;]\\s*it'?s\\s+(?:about\\s+)?)\\b"
+    message: "Negative parallelism ('It's not X, it's Y' / 'This isn't about X, it's about Y') is a prominent AI rhetorical pattern."
+    suggestion: "State the positive claim directly without negating an objection nobody raised."
+
+  - id: structure.throat_clearing
+    severity: warning
+    pattern: "(?i)\\b(?:here'?s\\s+the\\s+thing|let\\s+me\\s+be\\s+clear|the\\s+uncomfortable\\s+truth\\s+is|what\\s+(?:most\\s+people|nobody)\\s+(?:misses|tells\\s+you))\\b"
+    message: "Faux-insight throat-clearing opener."
+    suggestion: "Remove the dramatic setup and make the claim directly."
+
+  - id: structure.colon_reveal
+    severity: suggestion
+    pattern: "(?i)\\b(?:the\\s+best\\s+part|the\\s+secret|the\\s+catch|the\\s+result):\\s+[a-z]"
+    message: "Colon used for dramatic suspense reveal rather than listing or quotation."
+    suggestion: "Integrate into a normal declarative sentence."
+
+  - id: structure.trailing_participle
+    severity: suggestion
+    pattern: "(?i),\\s+(?:thereby\\s+)?(?:ensuring|highlighting|reflecting|underscoring|demonstrating|marking)\\s+(?:its|the|a)\\b"
+    message: "Trailing present-participle clause added for artificial significance ('..., ensuring success')."
+    suggestion: "End the sentence at the primary clause or explain the concrete result."

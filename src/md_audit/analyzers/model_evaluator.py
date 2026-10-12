@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from ..llm import ModelError
 from ..scanner import ScannedDocument
 
 
@@ -91,7 +92,7 @@ class ModelEvaluator:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        self.offline_mode = offline_mode or not bool(self.api_key)
+        self.offline_mode = offline_mode
         self.timeout = timeout
 
     def evaluate(self, doc: ScannedDocument) -> ModelEvaluationResult:
@@ -102,10 +103,16 @@ class ModelEvaluator:
         return self._evaluate_online(doc)
 
     def _evaluate_online(self, doc: ScannedDocument) -> ModelEvaluationResult:
+        if not self.api_key:
+            raise ModelError(
+                "OPENROUTER_API_KEY is not set. Set the environment variable OPENROUTER_API_KEY "
+                "or pass --offline for local simulation."
+            )
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/ai2human/md-audit",
+            "HTTP-Referer": "https://github.com/matthew-thomasson/human2ai",
             "X-Title": "Markdown Quality Auditor",
         }
 
@@ -126,7 +133,8 @@ class ModelEvaluator:
                 json=payload,
                 timeout=self.timeout,
             )
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                raise ModelError(f"OpenRouter API error (HTTP {resp.status_code}): {resp.text}")
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             parsed = json.loads(content)
@@ -152,11 +160,10 @@ class ModelEvaluator:
                 is_offline=False,
                 model_identifier=self.model,
             )
-        except Exception as e:
-            # Fall back to offline evaluation on network/API failure
-            res = self._evaluate_offline(doc)
-            res.critique_summary += f" (Online request failed: {e}; fell back to offline critic)"
-            return res
+        except requests.RequestException as e:
+            raise ModelError(f"Network error connecting to OpenRouter: {e}") from e
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            raise ModelError(f"Unexpected response format from model {self.model}: {e}") from e
 
     def _evaluate_offline(self, doc: ScannedDocument) -> ModelEvaluationResult:
         """Deterministic offline mock / heuristic critic for repeatable local runs and testing."""

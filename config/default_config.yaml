@@ -48,6 +48,24 @@ model:
   temperature: 0.2
   offline_mode: false
 
+# LLM Contextual Rewriter configuration
+llm_editor:
+  enabled: false
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1"
+  model: "deepseek/deepseek-chat"
+  mode: "balanced"  # balanced | conservative
+  temperature: 0.3
+  chunk_threshold_chars: 4000
+
+# Independent LLM Reviewer configuration
+reviewer:
+  enabled: false
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1"
+  model: "qwen/qwen-2.5-72b-instruct"
+  temperature: 0.1
+
 # Semantic Preservation validation gates
 validation:
   strict_numbers: true

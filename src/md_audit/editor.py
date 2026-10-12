@@ -1,4 +1,4 @@
-"""Editorial rewriting engine with targeted improvements and safety validation."""
+"""Editorial rewriting engine with targeted improvements, LLM rewriter, and safety validation."""
 
 from __future__ import annotations
 
@@ -8,13 +8,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from .scanner import ScannedDocument
 from .analyzers.deterministic import Finding
+from .llm import (
+    LLMEditor,
+    LLMReviewer,
+    ModelError,
+    ReviewResult,
+    isolate_markdown_elements,
+    restore_markdown_elements,
+)
+from .scanner import ScannedDocument
 from .validation import SemanticPreservationGate, ValidationResult
 
-# Direct, precision substitution rules for editorial improvement
-EDITORIAL_REPLACEMENTS = [
-    # Wordiness
+# Direct, safe precision substitution rules for deterministic editorial improvement.
+# Simple, verified replacements that do not remove clauses or change meaning.
+SAFE_EDITORIAL_REPLACEMENTS = [
+    # Wordiness (casing preserved dynamically)
     (re.compile(r"\bin order to\b", re.I), "to"),
     (re.compile(r"\bdue to the fact that\b", re.I), "because"),
     (re.compile(r"\bhas the ability to\b", re.I), "can"),
@@ -24,7 +33,7 @@ EDITORIAL_REPLACEMENTS = [
     (re.compile(r"\bfor the purpose of\b", re.I), "to"),
     (re.compile(r"\bin the event that\b", re.I), "if"),
     (re.compile(r"\bserves as\b", re.I), "is"),
-    # AI clichés & hyperbole
+    # Clichés & empty corporate puffery
     (re.compile(r"\bstands? as a testament to\b", re.I), "demonstrates"),
     (re.compile(r"\bdelve into\b", re.I), "examine"),
     (re.compile(r"\bdelves into\b", re.I), "examines"),
@@ -39,28 +48,64 @@ EDITORIAL_REPLACEMENTS = [
     (re.compile(r"\bfosters collaboration\b", re.I), "helps teams collaborate"),
     (re.compile(r"\bgame-changer\b", re.I), "significant advancement"),
     (re.compile(r"\bharness the power of\b", re.I), "use"),
-    (re.compile(r"\bleverage\b", re.I), "use"),
+    (re.compile(r"\bleverages?\b", re.I), "use"),
     (re.compile(r"\bleveraging\b", re.I), "using"),
     (re.compile(r"\bleveraged\b", re.I), "used"),
-    (re.compile(r"\butilize\b", re.I), "use"),
+    (re.compile(r"\butilizes?\b", re.I), "use"),
     (re.compile(r"\butilizing\b", re.I), "using"),
     (re.compile(r"\butilized\b", re.I), "used"),
-    # Formulaic openers & closers
-    (re.compile(r"^\s*In today's fast-paced (?:world|digital landscape),\s*", re.I | re.M), ""),
-    (re.compile(r"^\s*In the digital age,\s*", re.I | re.M), ""),
-    (re.compile(r"^\s*Now more than ever,\s*", re.I | re.M), ""),
-    (re.compile(r"^\s*In conclusion,\s*", re.I | re.M), ""),
-    (re.compile(r"^\s*In summary,\s*", re.I | re.M), ""),
-    (re.compile(r"^\s*All in all,\s*", re.I | re.M), ""),
-    (re.compile(r"\bIt is worth noting that\b", re.I), "Note that"),
-    (re.compile(r"\bIt's important to note that\b", re.I), "Note that"),
-    # Repetitive transitions
-    (re.compile(r"^\s*Moreover,\s*", re.I | re.M), ""),
-    (re.compile(r"^\s*Furthermore,\s*", re.I | re.M), ""),
-    # Generic adjectives
     (re.compile(r"\bgroundbreaking\b", re.I), "novel"),
     (re.compile(r"\bmultifaceted\b", re.I), "complex"),
+    (re.compile(r"\bIt is worth noting that\b", re.I), "Note that"),
+    (re.compile(r"\bIt's important to note that\b", re.I), "Note that"),
 ]
+
+
+def strip_leading_openers(text: str) -> tuple[str, int]:
+    """
+    Safely strip formulaic openers at the beginning of lines/paragraphs
+    while preserving indentation and capitalizing the following word so
+    sentences never start with lowercase letters.
+    """
+    opener_pattern = re.compile(
+        r"(?m)^([ \t]*)(?:In today's fast-paced (?:world|digital landscape)|"
+        r"In the digital age|Now more than ever|In conclusion|In summary|All in all|"
+        r"Moreover|Furthermore),\s*([a-zA-Z])"
+    )
+    changes = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal changes
+        changes += 1
+        indent = m.group(1)
+        next_char = m.group(2).upper()
+        return f"{indent}{next_char}"
+
+    revised = opener_pattern.sub(repl, text)
+    return revised, changes
+
+
+def apply_safe_replacements(text: str) -> tuple[str, int]:
+    """
+    Apply word and phrase replacements with dynamic casing preservation
+    (e.g., 'In order to' -> 'To', 'in order to' -> 'to').
+    """
+    changes = 0
+    revised = text
+
+    for pat, base_replacement in SAFE_EDITORIAL_REPLACEMENTS:
+        def match_handler(m: re.Match) -> str:
+            nonlocal changes
+            changes += 1
+            orig = m.group(0)
+            if orig and orig[0].isupper() and base_replacement:
+                return base_replacement[0].upper() + base_replacement[1:]
+            return base_replacement
+
+        if pat.search(revised):
+            revised = pat.sub(match_handler, revised)
+
+    return revised, changes
 
 
 @dataclass
@@ -73,87 +118,83 @@ class EditorialResult:
     validation: ValidationResult
     changes_count: int
     is_safe: bool
+    mode: str = "deterministic"
+    review: ReviewResult | None = None
 
 
 class EditorialEngine:
     """Proposes and applies targeted editorial improvements while strictly preserving protected content."""
 
-    def __init__(self, validator: SemanticPreservationGate | None = None):
+    def __init__(
+        self,
+        validator: SemanticPreservationGate | None = None,
+        llm_editor: LLMEditor | None = None,
+        llm_reviewer: LLMReviewer | None = None,
+    ):
         self.validator = validator or SemanticPreservationGate()
+        self.llm_editor = llm_editor
+        self.llm_reviewer = llm_reviewer
 
     def improve_document(
         self,
         doc: ScannedDocument,
         findings: Sequence[Finding] | None = None,
+        use_llm: bool = False,
+        mode: str = "balanced",
+        run_review: bool = False,
     ) -> EditorialResult:
-        """Apply targeted editorial improvements while preserving code, tables, and protected facts."""
+        """
+        Apply editorial improvements.
+        If use_llm is True, invokes LLM contextual editor with mode ('conservative' | 'balanced').
+        Otherwise, applies deterministic safe substitutions.
+        If run_review is True, runs the independent reviewer.
+        Always validates output through SemanticPreservationGate.
+        """
         original = doc.raw_content
-
-        # 1. Isolate fenced code blocks to prevent any accidental modification
-        code_blocks: list[str] = []
-        def save_code_block(match: re.Match) -> str:
-            token = f"⟦FENCED_CODE_BLOCK_{len(code_blocks)}⟧"
-            code_blocks.append(match.group(0))
-            return token
-
-        isolated = re.sub(r"```[a-zA-Z0-9_-]*\n.*?```", save_code_block, original, flags=re.DOTALL)
-
-        # 2. Isolate inline code
-        inline_codes: list[str] = []
-        def save_inline_code(match: re.Match) -> str:
-            token = f"⟦INLINE_CODE_{len(inline_codes)}⟧"
-            inline_codes.append(match.group(0))
-            return token
-
-        isolated = re.sub(r"`[^`\n]+`", save_inline_code, isolated)
-
-        # 3. Isolate Markdown link URLs
-        link_urls: list[str] = []
-        def save_link_url(match: re.Match) -> str:
-            anchor = match.group(1)
-            url = match.group(2)
-            token = f"⟦LINK_URL_{len(link_urls)}⟧"
-            link_urls.append(url)
-            return f"[{anchor}]({token})"
-
-        isolated = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", save_link_url, isolated)
-
-        # 4. Apply targeted replacements on the protected prose
-        revised_text = isolated
         changes_count = 0
+        review_result: ReviewResult | None = None
 
-        # Negative parallelism fix: "It's not just X, it's Y" -> "It is Y"
-        neg_par_pattern = re.compile(
-            r"\b(?:It'?s|This is)\s+not\s+(?:just\s+)?[^,.;]+,\s*(?:it'?s|it is)\s+",
-            re.IGNORECASE,
-        )
-        if neg_par_pattern.search(revised_text):
-            revised_text = neg_par_pattern.sub("It is ", revised_text)
-            changes_count += 1
+        if use_llm and self.llm_editor:
+            # 1. LLM Contextual Rewriting
+            revised_text = self.llm_editor.rewrite(original, mode=mode)
+            changes_count = 1 if revised_text.strip() != original.strip() else 0
+        else:
+            # 2. Deterministic safe substitutions
+            # Step A: Isolate code blocks, inline code, and links
+            isolated, code_blocks, inline_codes, link_urls = isolate_markdown_elements(original)
 
-        for pattern, replacement in EDITORIAL_REPLACEMENTS:
-            if pattern.search(revised_text):
-                revised_text = pattern.sub(replacement, revised_text)
-                changes_count += 1
+            # Step B: Safe opener stripping with capitalization fix
+            revised_text, opener_changes = strip_leading_openers(isolated)
+            changes_count += opener_changes
 
-        # 5. Clean up any leftover double spaces in prose before restoring code blocks
-        revised_text = re.sub(r"[ \t]+", " ", revised_text)
+            # Step C: Precision substitutions with case preservation
+            revised_text, repl_changes = apply_safe_replacements(revised_text)
+            changes_count += repl_changes
 
-        # Restore isolated tokens verbatim
-        for idx, url in enumerate(link_urls):
-            revised_text = revised_text.replace(f"⟦LINK_URL_{idx}⟧", url)
+            # Step D: Clean leftover double spaces in prose
+            revised_text = re.sub(r"[ \t]+", " ", revised_text)
 
-        for idx, code in enumerate(inline_codes):
-            revised_text = revised_text.replace(f"⟦INLINE_CODE_{idx}⟧", code)
+            # Step E: Restore isolated tokens verbatim
+            revised_text = restore_markdown_elements(revised_text, code_blocks, inline_codes, link_urls)
 
-        for idx, block in enumerate(code_blocks):
-            revised_text = revised_text.replace(f"⟦FENCED_CODE_BLOCK_{idx}⟧", block)
-
-        # Preserve markdown line breaks without trailing spaces on prose lines
+        # Preserve markdown line breaks without trailing spaces
         revised_text = "\n".join(line.rstrip() for line in revised_text.splitlines())
 
-        # 6. Validate the revised text against original using the Semantic Preservation Gate
+        # 3. Deterministic Semantic Preservation Validation
         validation_res = self.validator.validate(original, revised_text)
+
+        # 4. Optional Independent LLM Review
+        if run_review and self.llm_reviewer and validation_res.is_valid and changes_count > 0:
+            review_result = self.llm_reviewer.review(original, revised_text)
+            if review_result.decision == "Reject":
+                # Reviewer rejected the proposed revision: retain original content
+                revised_text = original
+                changes_count = 0
+
+        # If semantic validation failed, reject changes
+        if not validation_res.is_valid:
+            revised_text = original
+            changes_count = 0
 
         # Generate unified diff
         diff_lines = list(
@@ -169,9 +210,11 @@ class EditorialEngine:
         return EditorialResult(
             file_path=doc.path,
             original_content=original,
-            revised_content=revised_text if validation_res.is_valid else original,
+            revised_content=revised_text,
             diff=diff_str,
             validation=validation_res,
-            changes_count=changes_count if validation_res.is_valid else 0,
-            is_safe=validation_res.is_valid,
+            changes_count=changes_count,
+            is_safe=validation_res.is_valid and (review_result is None or review_result.decision != "Reject"),
+            mode=mode if use_llm else "deterministic",
+            review=review_result,
         )

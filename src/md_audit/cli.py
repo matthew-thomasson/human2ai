@@ -18,6 +18,7 @@ from .analyzers import (
     analyze_repetition,
 )
 from .editor import EditorialEngine
+from .llm import LLMEditor, LLMReviewer, ModelError
 from .reporting import (
     AuditReport,
     format_comparison_summary,
@@ -30,17 +31,39 @@ from .scoring import QualityScorer
 from .validation import SemanticPreservationGate
 
 
+def get_default_config_path() -> Path:
+    """Resolve bundled default config regardless of current working directory."""
+    pkg_cfg = Path(__file__).resolve().parent / "config" / "default_config.yaml"
+    if pkg_cfg.exists():
+        return pkg_cfg
+    repo_cfg = Path(__file__).resolve().parent.parent.parent / "config" / "default_config.yaml"
+    if repo_cfg.exists():
+        return repo_cfg
+    return Path("config/default_config.yaml")
+
+
+def get_default_rules_dir() -> Path:
+    """Resolve bundled rules directory regardless of current working directory."""
+    pkg_rules = Path(__file__).resolve().parent / "config" / "rules"
+    if pkg_rules.exists():
+        return pkg_rules
+    repo_rules = Path(__file__).resolve().parent.parent.parent / "config" / "rules"
+    if repo_rules.exists():
+        return repo_rules
+    return Path("config/rules")
+
+
 def load_config(config_path: str | Path | None = None) -> dict:
     """Load configuration from specified file or fallback to package default."""
     if config_path:
         p = Path(config_path)
         if p.exists():
             return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        raise FileNotFoundError(f"Configuration file not found: {p}")
 
-    # Check for default config in repo root / config /
-    repo_cfg = Path("config/default_config.yaml")
-    if repo_cfg.exists():
-        return yaml.safe_load(repo_cfg.read_text(encoding="utf-8")) or {}
+    default_p = get_default_config_path()
+    if default_p.exists():
+        return yaml.safe_load(default_p.read_text(encoding="utf-8")) or {}
 
     return {}
 
@@ -51,19 +74,14 @@ def run_audit(
     rules_dir: str | Path | None = None,
     enable_model: bool = False,
     offline_model: bool = False,
+    api_key: str | None = None,
 ) -> AuditReport:
     """Core audit execution helper shared by scan and compare commands."""
     exclusions = config.get("exclusions")
     documents = scan_directory(target_dir, exclusions=exclusions)
 
-    # Determine rules directory
     if not rules_dir:
-        candidate = Path("config/rules")
-        if candidate.exists():
-            rules_dir = candidate
-        else:
-            # Fall back to relative from file
-            rules_dir = Path(__file__).resolve().parent.parent.parent / "config" / "rules"
+        rules_dir = get_default_rules_dir()
 
     deterministic_analyzer = DeterministicAnalyzer.from_rules_directory(rules_dir)
     scorer = QualityScorer(
@@ -81,7 +99,8 @@ def run_audit(
         model_evaluator = ModelEvaluator(
             base_url=m_cfg.get("base_url", "https://openrouter.ai/api/v1"),
             model=m_cfg.get("model", "openai/gpt-4o-mini"),
-            offline_mode=offline_model or m_cfg.get("offline_mode", False),
+            api_key=api_key or os.environ.get("OPENROUTER_API_KEY", ""),
+            offline_mode=offline_model,
         )
 
     for doc in documents:
@@ -96,7 +115,6 @@ def run_audit(
         repetition = analyze_repetition(doc)
         rule_findings.extend(repetition.findings)
 
-        # Sort findings by line number
         rule_findings.sort(key=lambda f: (f.line_number, f.column))
         findings_by_file[doc.path] = rule_findings
 
@@ -118,10 +136,9 @@ def run_audit(
         )
         doc_scores.append(d_score)
 
-    # Aggregate Directory Score
     dir_score = scorer.aggregate_directory(doc_scores)
-
     timestamp = datetime.now(timezone.utc).isoformat()
+
     return AuditReport(
         directory=str(target_dir),
         timestamp=timestamp,
@@ -138,21 +155,25 @@ def run_audit(
 def handle_scan(args: argparse.Namespace) -> int:
     """Handler for 'md-audit scan <directory>'."""
     config = load_config(args.config)
-    report = run_audit(
-        target_dir=args.directory,
-        config=config,
-        rules_dir=args.rules_dir,
-        enable_model=args.model_eval,
-        offline_model=args.offline,
-    )
+    try:
+        report = run_audit(
+            target_dir=args.directory,
+            config=config,
+            rules_dir=args.rules_dir,
+            enable_model=args.model_eval,
+            offline_model=args.offline,
+            api_key=args.api_key,
+        )
+    except ModelError as e:
+        print(f"Error during model-assisted evaluation: {e}", file=sys.stderr)
+        return 1
 
-    # Output according to format
     fmt = args.format.lower()
     if fmt == "json":
         json_data = format_json_report(report)
         import json
         text_out = json.dumps(json_data, indent=2)
-    elif fmt == "markdown" or fmt == "md":
+    elif fmt in {"markdown", "md"}:
         text_out = format_markdown_report(report)
     else:
         text_out = format_terminal_summary(report)
@@ -178,26 +199,97 @@ def handle_improve(args: argparse.Namespace) -> int:
         print(f"No Markdown files found in {args.directory}.")
         return 0
 
-    engine = EditorialEngine()
+    api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY", "")
+
+    # Setup LLM Editor if requested
+    llm_editor = None
+    if args.llm:
+        editor_cfg = config.get("llm_editor", {})
+        editor_model = args.model or editor_cfg.get("model", "deepseek/deepseek-chat")
+        base_url = editor_cfg.get("base_url", "https://openrouter.ai/api/v1")
+        llm_editor = LLMEditor(
+            base_url=base_url,
+            model=editor_model,
+            api_key=api_key,
+            offline_mode=args.offline,
+        )
+
+    # Setup Independent Reviewer if requested
+    llm_reviewer = None
+    if args.review:
+        reviewer_cfg = config.get("reviewer", {})
+        reviewer_model = args.reviewer_model or reviewer_cfg.get("model", "qwen/qwen-2.5-72b-instruct")
+        base_url = reviewer_cfg.get("base_url", "https://openrouter.ai/api/v1")
+        llm_reviewer = LLMReviewer(
+            base_url=base_url,
+            model=reviewer_model,
+            api_key=api_key,
+            offline_mode=args.offline,
+        )
+
+    engine = EditorialEngine(
+        validator=SemanticPreservationGate(),
+        llm_editor=llm_editor,
+        llm_reviewer=llm_reviewer,
+    )
+
     output_dir = Path(args.output or "revised")
     if not args.preview:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Improving Markdown documents from: {args.directory}")
+    mode_str = f"LLM ({args.mode})" if args.llm else "Deterministic"
+    if args.offline:
+        mode_str += " [offline-simulation]"
+    print(f"Engine mode: {mode_str}")
+    if args.review:
+        rev_model = args.reviewer_model or config.get("reviewer", {}).get("model", "qwen/qwen-2.5-72b-instruct")
+        print(f"Reviewer: Enabled ({rev_model})")
+
     if args.preview:
         print("Mode: PREVIEW (no files will be written)\n")
     else:
         print(f"Output directory: {output_dir.resolve()}\n")
 
     improved_count = 0
+    accepted_count = 0
     rejected_count = 0
+    unreviewed_count = 0
 
     for doc in documents:
-        res = engine.improve_document(doc)
+        try:
+            res = engine.improve_document(
+                doc,
+                use_llm=args.llm,
+                mode=args.mode,
+                run_review=args.review,
+            )
+        except ModelError as e:
+            print(f"Error processing {doc.path} with LLM: {e}", file=sys.stderr)
+            return 1
+
+        review_status = ""
+        if res.review:
+            dec = res.review.decision
+            if dec == "Accept":
+                accepted_count += 1
+                review_status = " [REVIEW: ACCEPTED]"
+            elif dec == "Reject":
+                rejected_count += 1
+                review_status = " [REVIEW: REJECTED]"
+            elif dec == "Review manually":
+                accepted_count += 1
+                review_status = " [REVIEW: MANUAL REVIEW RECOMMENDED]"
+            elif dec == "Unreviewed":
+                unreviewed_count += 1
+                review_status = " [REVIEW: UNREVIEWED]"
+
         if res.changes_count > 0:
             if res.is_safe:
                 improved_count += 1
-                print(f"[REVISED] {doc.path} ({res.changes_count} improvements applied)")
+                print(f"[REVISED{review_status}] {doc.path}")
+                if res.review:
+                    print(f"  Review verdict: {res.review.decision} — {res.review.reason}")
                 if args.preview or args.diff:
                     print(res.diff)
                 if not args.preview:
@@ -206,19 +298,29 @@ def handle_improve(args: argparse.Namespace) -> int:
                     dest_file.write_text(res.revised_content, encoding="utf-8")
             else:
                 rejected_count += 1
-                print(f"[REJECTED] {doc.path}: Material semantic changes detected! Changes aborted for safety.")
+                print(f"[REJECTED{review_status}] {doc.path}: Material changes detected or rejected by reviewer.")
+                if res.review and res.review.decision == "Reject":
+                    print(f"  Reviewer reason: {res.review.reason}")
                 for change in res.validation.material_changes:
                     print(f"  - {change.change_type} ({change.severity}): {change.explanation}")
         else:
-            print(f"[UNCHANGED] {doc.path} (already clean)")
+            if res.review and res.review.decision == "Reject":
+                print(f"[REJECTED BY REVIEWER] {doc.path}: {res.review.reason}")
+                rejected_count += 1
+            else:
+                print(f"[UNCHANGED] {doc.path} (already clean)")
             if not args.preview:
                 dest_file = output_dir / doc.path
                 dest_file.parent.mkdir(parents=True, exist_ok=True)
                 dest_file.write_text(res.revised_content, encoding="utf-8")
 
     print("\nEditorial Summary:")
-    print(f"  Files improved: {improved_count}")
-    print(f"  Files rejected due to semantic changes: {rejected_count}")
+    print(f"  Files processed: {len(documents)}")
+    print(f"  Files improved:  {improved_count}")
+    if args.review:
+        print(f"  Accepted:        {accepted_count}")
+        print(f"  Rejected:        {rejected_count}")
+        print(f"  Unreviewed:      {unreviewed_count}")
     if not args.preview:
         print(f"  Output saved to: {output_dir.resolve()}")
     return 0
@@ -231,7 +333,6 @@ def handle_compare(args: argparse.Namespace) -> int:
     before_report = run_audit(args.original_dir, config=config)
     after_report = run_audit(args.revised_dir, config=config)
 
-    # Compare files and semantic preservation
     orig_docs = {d.path: d for d in scan_directory(args.original_dir, exclusions=config.get("exclusions"))}
     rev_docs = {d.path: d for d in scan_directory(args.revised_dir, exclusions=config.get("exclusions"))}
 
@@ -264,7 +365,13 @@ def handle_compare(args: argparse.Namespace) -> int:
         files_changed=files_changed,
         diffs=diffs,
         validation_results=validation_results,
+        output_dir=args.revised_dir,
     )
+
+    if args.diff and diffs:
+        summary_text += "\n\nFile Diffs:\n" + ("=" * 40) + "\n"
+        for p, d in diffs.items():
+            summary_text += f"\n--- {p} ---\n{d}\n"
 
     if args.output_report:
         out_p = Path(args.output_report)
@@ -295,7 +402,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p.add_argument("--format", choices=["text", "markdown", "json", "md"], default="text", help="Output format")
     scan_p.add_argument("--output-report", help="File path to save the generated report")
     scan_p.add_argument("--model-eval", action="store_true", help="Enable optional model-assisted critique")
-    scan_p.add_argument("--offline", action="store_true", help="Run model evaluation in offline test mode")
+    scan_p.add_argument("--offline", action="store_true", help="Run in offline simulation mode")
+    scan_p.add_argument("--api-key", help="OpenRouter API key override")
 
     # improve command
     imp_p = subparsers.add_parser("improve", help="Propose and apply targeted editorial improvements")
@@ -304,6 +412,13 @@ def build_parser() -> argparse.ArgumentParser:
     imp_p.add_argument("--preview", action="store_true", help="Preview proposed edits without writing files")
     imp_p.add_argument("--diff", action="store_true", help="Display full unified diff of changes")
     imp_p.add_argument("--config", help="Path to custom config YAML")
+    imp_p.add_argument("--llm", action="store_true", help="Use OpenRouter LLM for contextual rewriting")
+    imp_p.add_argument("--mode", choices=["conservative", "balanced"], default="balanced", help="LLM editing mode (default: balanced)")
+    imp_p.add_argument("--model", help="LLM rewriting model (e.g. deepseek/deepseek-chat)")
+    imp_p.add_argument("--review", action="store_true", help="Use a second independent LLM to review proposed changes")
+    imp_p.add_argument("--reviewer-model", help="Reviewer LLM model (e.g. qwen/qwen-2.5-72b-instruct)")
+    imp_p.add_argument("--offline", action="store_true", help="Run LLM rewriter and reviewer in offline simulation mode")
+    imp_p.add_argument("--api-key", help="OpenRouter API key override")
 
     # compare command
     cmp_p = subparsers.add_parser("compare", help="Compare writing quality before and after improvement")
@@ -311,6 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_p.add_argument("revised_dir", help="Revised Markdown directory")
     cmp_p.add_argument("--config", help="Path to custom config YAML")
     cmp_p.add_argument("--output-report", help="File path to save comparison report")
+    cmp_p.add_argument("--diff", action="store_true", help="Include full unified diffs in output")
 
     return parser
 

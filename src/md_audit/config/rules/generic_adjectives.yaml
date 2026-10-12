@@ -1,0 +1,59 @@
+# Rules for generic and overused adjectives
+# Sources: shir-danishyar/humanize (references/vocabulary.md), ameenmo/humanize-skill
+version: 1
+category: language_clarity
+
+rules:
+  - id: adj.crucial
+    severity: suggestion
+    pattern: "(?i)\\b(?:a\\s+)?crucial\\b"
+    message: "'crucial' is heavily overused by LLMs to create artificial importance."
+    suggestion: "Use 'important', 'necessary', or cut entirely."
+
+  - id: adj.pivotal
+    severity: warning
+    pattern: "(?i)\\b(?:a\\s+)?pivotal\\b"
+    message: "'pivotal' is an overused hyperbole for standard components or steps."
+    suggestion: "Use 'key', 'main', or describe why it matters."
+
+  - id: adj.comprehensive
+    severity: suggestion
+    pattern: "(?i)\\bcomprehensive\\b"
+    message: "'comprehensive' is frequently used as generic filler."
+    suggestion: "Use 'complete', 'detailed', or omit."
+
+  - id: adj.transformative
+    severity: warning
+    pattern: "(?i)\\btransformative\\b"
+    message: "'transformative' is inflated marketing prose."
+    suggestion: "State the concrete change or measurable outcome."
+
+  - id: adj.innovative
+    severity: suggestion
+    pattern: "(?i)\\binnovative\\b"
+    message: "'innovative' is generic self-praise without technical substance."
+    suggestion: "Explain the novelty or technical mechanism directly."
+
+  - id: adj.holistic
+    severity: warning
+    pattern: "(?i)\\bholistic\\b"
+    message: "'holistic' is a buzzword that often adds no specific meaning."
+    suggestion: "Use 'complete', 'end-to-end', or 'whole'."
+
+  - id: adj.multifaceted
+    severity: warning
+    pattern: "(?i)\\bmultifaceted\\b"
+    message: "'multifaceted' is an AI stock word for anything with multiple parts."
+    suggestion: "Use 'complex' or name the specific aspects."
+
+  - id: adj.vibrant
+    severity: warning
+    pattern: "(?i)\\bvibrant\\b"
+    message: "'vibrant' is decorative filler common in AI travel and culture prose."
+    suggestion: "Describe the specific activity, community, or setting."
+
+  - id: adj.meticulous
+    severity: suggestion
+    pattern: "(?i)\\bmeticulous(?:ly)?\\b"
+    message: "'meticulous' is an overused adjective for routine care or precision."
+    suggestion: "Use 'careful(ly)' or 'thorough(ly)'."

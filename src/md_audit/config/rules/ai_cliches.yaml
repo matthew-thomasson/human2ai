@@ -1,0 +1,95 @@
+# Rules for common AI-writing clichés and overused expressions
+# Sources: shir-danishyar/humanize, ameenmo/humanize-skill, Wikipedia Signs of AI writing
+version: 1
+category: ai_patterns
+
+rules:
+  - id: ai.cliche.delve
+    severity: warning
+    pattern: "(?i)\\bdelve(?:s|d)?\\s+into\\b"
+    message: "'delve into' is a classic AI-style cliché."
+    suggestion: "Use 'examine', 'explore', 'look at', or state the topic directly."
+
+  - id: ai.cliche.testament
+    severity: warning
+    pattern: "(?i)\\bstands?\\s+as\\s+a\\s+testament\\s+to\\b"
+    message: "'stands as a testament to' is formulaic significance puffery."
+    suggestion: "State the concrete achievement or evidence directly."
+
+  - id: ai.cliche.landscape
+    severity: warning
+    pattern: "(?i)\\b(?:in\\s+the\\s+)?(?:rapidly\\s+evolving|ever-evolving|dynamic|modern)\\s+(?:digital\\s+)?landscape\\b"
+    message: "'in the ... landscape' is generic throat-clearing fluff."
+    suggestion: "Omit or name the specific market, industry, or technical domain."
+
+  - id: ai.cliche.pivotal_role
+    severity: warning
+    pattern: "(?i)\\bplays?\\s+a\\s+(?:pivotal|crucial|vital)\\s+role\\b"
+    message: "'plays a pivotal/crucial role' is vague puffery."
+    suggestion: "Explain what it actually does or how it contributes."
+
+  - id: ai.cliche.tapestry
+    severity: warning
+    pattern: "(?i)\\b(?:rich\\s+)?tapestry\\s+of\\b"
+    message: "'tapestry of' is ornate, generic AI imagery."
+    suggestion: "Use 'mix of', 'range of', or name the specific components."
+
+  - id: ai.cliche.beacon
+    severity: warning
+    pattern: "(?i)\\b(?:serves?\\s+as\\s+a\\s+)?beacon\\s+of\\b"
+    message: "'beacon of' is rhetorical hyperbole."
+    suggestion: "State the fact or role without figurative embellishment."
+
+  - id: ai.cliche.unlock_potential
+    severity: warning
+    pattern: "(?i)\\bunlock(?:s|ed|ing)?\\s+(?:the\\s+)?(?:full\\s+)?potential\\b"
+    message: "'unlock potential' is marketing cliché."
+    suggestion: "State the actual benefit, feature, or metric."
+
+  - id: ai.cliche.foster_collaboration
+    severity: warning
+    pattern: "(?i)\\bfoster(?:s|ed|ing)?\\s+(?:seamless\\s+)?collaboration\\b"
+    message: "'foster collaboration' is abstract filler."
+    suggestion: "Use 'help teams work together', 'coordinate', or describe the workflow."
+
+  - id: ai.cliche.game_changer
+    severity: warning
+    pattern: "(?i)\\b(?:a\\s+)?game[- ]changer\\b"
+    message: "'game-changer' is ungrounded marketing hype."
+    suggestion: "State what was improved and by how much."
+
+  - id: ai.cliche.leverage
+    severity: warning
+    pattern: "(?i)\\bleverage(?:s|d|ing)?\\b"
+    message: "'leverage' as a verb is corporate AI-speak."
+    suggestion: "Use 'use', 'apply', or 'build upon'."
+
+  - id: ai.cliche.utilize
+    severity: suggestion
+    pattern: "(?i)\\butilize(?:s|d|ing)?\\b"
+    message: "'utilize' is needlessly formal when 'use' suffices."
+    suggestion: "Use 'use'."
+
+  - id: ai.cliche.harness
+    severity: warning
+    pattern: "(?i)\\bharness(?:es|ed|ing)?\\s+(?:the\\s+power\\s+of)?\\b"
+    message: "'harness the power of' is dramatic cliché."
+    suggestion: "Use 'use' or state the integration plainly."
+
+  - id: ai.cliche.seamless
+    severity: warning
+    pattern: "(?i)\\bseamless(?:ly)?\\b"
+    message: "'seamless' is an overused promise that masks technical complexity."
+    suggestion: "Describe the actual user experience or integration mechanism."
+
+  - id: ai.cliche.robust
+    severity: suggestion
+    pattern: "(?i)\\brobust\\b"
+    message: "'robust' is an overused, vague quality adjective unless referring to statistical robustness."
+    suggestion: "Describe specific traits: 'resilient', 'tested', 'reliable', or state fault-tolerance metrics."
+
+  - id: ai.cliche.groundbreaking
+    severity: warning
+    pattern: "(?i)\\bgroundbreaking\\b"
+    message: "'groundbreaking' is unsupported self-praise."
+    suggestion: "State what is new or what prior limitation was solved."

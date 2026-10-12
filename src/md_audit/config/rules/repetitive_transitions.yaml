@@ -1,0 +1,41 @@
+# Rules for repetitive formal transitions
+# Sources: shir-danishyar/humanize, ameenmo/humanize-skill
+version: 1
+category: repetition
+
+rules:
+  - id: transition.moreover
+    severity: warning
+    pattern: "(?i)^(?:\\s*|[-*]\\s+)Moreover,"
+    message: "'Moreover' is an overused connective that flags stiff, academic or AI-generated prose."
+    suggestion: "Omit or let the sentence stand on its own without a connective adverb."
+
+  - id: transition.furthermore
+    severity: warning
+    pattern: "(?i)^(?:\\s*|[-*]\\s+)Furthermore,"
+    message: "'Furthermore' is an overly formal transition frequently inserted by AI models."
+    suggestion: "Delete 'Furthermore,' or use 'Also,' or combine the ideas."
+
+  - id: transition.additionally
+    severity: suggestion
+    pattern: "(?i)^(?:\\s*|[-*]\\s+)Additionally,"
+    message: "'Additionally,' is overused to pad sequential points."
+    suggestion: "Start directly with the subject or use 'Also,'."
+
+  - id: transition.consequently
+    severity: suggestion
+    pattern: "(?i)^(?:\\s*|[-*]\\s+)Consequently,"
+    message: "'Consequently,' is stiff and often signals synthetic logical flow."
+    suggestion: "Use 'As a result,' or show the causality naturally."
+
+  - id: transition.notably
+    severity: suggestion
+    pattern: "(?i)\\bnotably,\\s+"
+    message: "'Notably,' tells the reader something is notable rather than showing it."
+    suggestion: "Cut 'notably,' and present the fact directly."
+
+  - id: transition.it_is_worth_noting
+    severity: warning
+    pattern: "(?i)\\b(?:it'?s|it\\s+is)\\s+(?:worth\\s+noting|important\\s+to\\s+(?:note|remember))\\s+that\\b"
+    message: "'It is worth noting that' is empty hedge filler."
+    suggestion: "Delete the phrase and state the note directly."

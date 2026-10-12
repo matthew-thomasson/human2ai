@@ -217,23 +217,56 @@ def format_comparison_summary(
     files_changed: int,
     diffs: dict[str, str],
     validation_results: dict[str, ValidationResult],
+    changes_stats: dict[str, int] | None = None,
+    output_dir: str | None = None,
 ) -> str:
-    """Format before/after comparison table and metrics."""
+    """Format before/after comparison table and metrics matching Section 7."""
     lines: list[str] = []
-    lines.append("Writing Quality Comparison")
-    lines.append("==========================")
-    lines.append("")
-    lines.append(f"Original directory: {before_report.directory}")
-    lines.append(f"Revised directory:  {after_report.directory}")
-    lines.append("")
+    lines.append("Markdown Quality Comparison")
+    lines.append("===========================")
+    lines.append(f"Files analysed: {before_report.directory_score.total_files}")
+    lines.append(f"Files improved: {files_changed}")
 
     b_overall = before_report.directory_score.overall_score
     a_overall = after_report.directory_score.overall_score
     diff_overall = a_overall - b_overall
     sign = "+" if diff_overall >= 0 else ""
 
-    lines.append(f"Overall writing quality: {b_overall} -> {a_overall} ({sign}{diff_overall})")
+    lines.append("Overall quality:")
+    lines.append(f"  Before: {b_overall}/100")
+    lines.append(f"  After:  {a_overall}/100 ({sign}{diff_overall})")
+
+    b_ai = before_report.directory_score.category_scores.get("ai_patterns", 100)
+    a_ai = after_report.directory_score.category_scores.get("ai_patterns", 100)
+    diff_ai = a_ai - b_ai
+    sign_ai = "+" if diff_ai >= 0 else ""
+
+    lines.append("AI-style patterns:")
+    lines.append(f"  Before: {b_ai}/100")
+    lines.append(f"  After:  {a_ai}/100 ({sign_ai}{diff_ai})")
+
+    stats = changes_stats or {
+        "accepted": files_changed,
+        "rejected": 0,
+        "unreviewed": 0,
+    }
+    lines.append("Changes:")
+    lines.append(f"  Accepted:   {stats.get('accepted', 0)}")
+    lines.append(f"  Rejected:   {stats.get('rejected', 0)}")
+    lines.append(f"  Unreviewed: {stats.get('unreviewed', 0)}")
+
+    any_critical = any(not val.is_valid for val in validation_results.values())
+    lines.append("Technical preservation:")
+    if not any_critical:
+        lines.append("  No detected changes to protected elements.")
+    else:
+        crit_files = [f for f, v in validation_results.items() if not v.is_valid]
+        lines.append(f"  WARNING: Detected changes to protected elements in {len(crit_files)} file(s).")
+
+    lines.append(f"Output: {output_dir or after_report.directory}")
     lines.append("")
+
+    lines.append("Detailed Category Metrics:")
     lines.append(f"| {'Metric':<20} | {'Before':>6} | {'After':>6} | {'Change':>6} |")
     lines.append(f"|{'-'*22}|{'-'*8}:|{'-'*8}:|{'-'*8}:|")
     lines.append(f"| {'Writing quality':<20} | {b_overall:>6} | {a_overall:>6} | {sign + str(diff_overall):>6} |")
@@ -250,7 +283,6 @@ def format_comparison_summary(
     resolved = max(0, b_findings - a_findings)
 
     lines.append("")
-    lines.append(f"Files modified:              {files_changed}")
     lines.append(f"Initial findings count:      {b_findings}")
     lines.append(f"Resolved findings:           {resolved}")
     lines.append(f"Remaining findings:          {a_findings}")

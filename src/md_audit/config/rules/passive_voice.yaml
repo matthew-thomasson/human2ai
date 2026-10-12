@@ -1,0 +1,16 @@
+# Rules for passive voice detection
+version: 1
+category: language_clarity
+
+rules:
+  - id: clarity.passive.was_by
+    severity: suggestion
+    pattern: "(?i)\\b(?:is|are|was|were|been|being)\\s+([a-z]+(?:ed|en|wn|lt|pt))\\s+by\\b"
+    message: "Passive voice with explicit agent ('... by ...')."
+    suggestion: "Convert to active voice by placing the actor first."
+
+  - id: clarity.passive.construction
+    severity: suggestion
+    pattern: "(?i)\\b(?:is|are|was|were|be|been|being)\\s+(?:implemented|utilized|leveraged|executed|performed|conducted|facilitated|generated|produced|analyzed)\\b"
+    message: "Passive construction with generic action verb."
+    suggestion: "Specify who or what performs the action using an active verb."
