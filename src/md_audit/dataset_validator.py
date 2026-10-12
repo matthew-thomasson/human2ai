@@ -120,6 +120,9 @@ def validate_dataset_manifest(
             # Check relative to manifest parent
             file_path = m_path.parent / rel_file
         if not file_path.exists():
+            # Check relative to manifest parent / documents
+            file_path = m_path.parent / "documents" / rel_file
+        if not file_path.exists():
             errors.append(ValidationIssue(doc_id, "file", "error", f"File does not exist: {file_path}"))
             continue
 
