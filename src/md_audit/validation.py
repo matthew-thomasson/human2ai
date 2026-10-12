@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 RFC_2119_KEYWORDS = {
     "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
@@ -35,14 +35,24 @@ class MaterialChange:
 
 @dataclass
 class ValidationResult:
-    """Outcome of comparing original vs revised text for semantic preservation."""
+    """Outcome of comparing original vs revised text for semantic preservation with detailed diagnostics."""
     is_valid: bool
     material_changes: list[MaterialChange]
     preserved_counts: dict[str, int] = field(default_factory=dict)
+    checks_run: list[dict[str, Any]] = field(default_factory=list)
+    status: str = "executed"
+    reason: str | None = None
 
     def to_dict(self) -> dict:
         return {
+            "component": "semantic_preservation_gate",
+            "implementation": "md_audit.validation.SemanticPreservationGate",
+            "version": "1.0.0",
+            "status": self.status,
+            "reason": self.reason,
             "is_valid": self.is_valid,
+            "checks_run_count": len(self.checks_run),
+            "checks_run": self.checks_run,
             "critical_changes_count": sum(1 for c in self.material_changes if c.severity == "critical"),
             "warning_changes_count": sum(1 for c in self.material_changes if c.severity == "warning"),
             "material_changes": [c.to_dict() for c in self.material_changes],
@@ -302,6 +312,59 @@ class SemanticPreservationGate:
                     )
                 )
 
+        # Build execution check evidence
+        checks_run = [
+            {
+                "check": "fenced_code_blocks",
+                "strict": self.strict_code,
+                "original_count": preserved_counts.get("code_blocks", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "code_block"),
+                "passed": not any(c.change_type == "code_block" for c in changes),
+            },
+            {
+                "check": "numerical_values",
+                "strict": self.strict_numbers,
+                "original_count": preserved_counts.get("numbers", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "numerical_value"),
+                "passed": not any(c.change_type == "numerical_value" for c in changes),
+            },
+            {
+                "check": "dates_and_deadlines",
+                "strict": self.strict_dates,
+                "original_count": preserved_counts.get("dates", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "date_or_deadline"),
+                "passed": not any(c.change_type == "date_or_deadline" for c in changes),
+            },
+            {
+                "check": "technical_requirements",
+                "strict": self.strict_requirements,
+                "original_count": preserved_counts.get("rfc_keywords", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "technical_requirement"),
+                "passed": not any(c.change_type == "technical_requirement" for c in changes),
+            },
+            {
+                "check": "urls_and_links",
+                "strict": self.strict_urls,
+                "original_count": preserved_counts.get("urls", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "url_or_link"),
+                "passed": not any(c.change_type == "url_or_link" for c in changes),
+            },
+            {
+                "check": "inline_identifiers",
+                "strict": True,
+                "original_count": preserved_counts.get("inline_identifiers", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "inline_identifier"),
+                "passed": not any(c.change_type == "inline_identifier" for c in changes),
+            },
+            {
+                "check": "markdown_structure",
+                "strict": self.strict_structure,
+                "original_count": preserved_counts.get("headings", 0),
+                "violations_detected": sum(1 for c in changes if c.change_type == "markdown_structure"),
+                "passed": not any(c.change_type == "markdown_structure" for c in changes),
+            },
+        ]
+
         has_critical = any(c.severity == "critical" for c in changes)
         is_valid = not has_critical
 
@@ -309,4 +372,7 @@ class SemanticPreservationGate:
             is_valid=is_valid,
             material_changes=changes,
             preserved_counts=preserved_counts,
+            checks_run=checks_run,
+            status="executed",
+            reason=None,
         )

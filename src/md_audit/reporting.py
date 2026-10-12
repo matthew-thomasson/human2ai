@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -34,6 +34,8 @@ class AuditReport:
     findings_by_file: dict[str, list[Finding]]
     model_evaluations: list[ModelEvaluationResult] | None = None
     config_summary: dict[str, Any] | None = None
+    diagnostics_by_file: dict[str, dict[str, Any]] = field(default_factory=dict)
+    engine_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def format_terminal_summary(report: AuditReport) -> str:
@@ -202,9 +204,11 @@ def format_json_report(report: AuditReport) -> dict[str, Any]:
                 "findings": [
                     f.to_dict() for f in report.findings_by_file.get(d.file_path, [])
                 ],
+                "diagnostics": report.diagnostics_by_file.get(d.file_path, {}),
             }
             for d in report.document_scores
         ],
+        "engine_diagnostics": report.engine_diagnostics,
         "model_evaluations": [
             m.to_dict() for m in (report.model_evaluations or [])
         ],

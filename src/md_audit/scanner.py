@@ -26,6 +26,47 @@ DEFAULT_EXCLUSIONS = {
 
 
 @dataclass
+class MaskingDiagnostics:
+    """Detailed diagnostics from the Markdown prose extraction and masking stage."""
+    raw_characters: int
+    raw_lines: int
+    prose_lines: int
+    masked_lines: int
+    prose_words: int
+    frontmatter_lines: int = 0
+    code_fence_lines: int = 0
+    html_comment_lines: int = 0
+    inline_code_spans: int = 0
+    link_spans: int = 0
+
+    def to_diagnostics(self) -> dict:
+        return {
+            "component": "markdown_extractor_and_masker",
+            "implementation": "md_audit.scanner.mask_markdown_prose",
+            "version": "1.0.0",
+            "status": "executed" if self.prose_words > 0 else "not_applicable",
+            "reason": None if self.prose_words > 0 else "Insufficient analysable text (0 prose words)",
+            "input_size": {
+                "raw_characters": self.raw_characters,
+                "raw_lines": self.raw_lines,
+                "prose_lines": self.prose_lines,
+                "masked_lines": self.masked_lines,
+                "prose_words": self.prose_words,
+            },
+            "masked_elements": {
+                "frontmatter_lines": self.frontmatter_lines,
+                "code_fence_lines": self.code_fence_lines,
+                "html_comment_lines": self.html_comment_lines,
+                "inline_code_spans": self.inline_code_spans,
+                "link_spans": self.link_spans,
+            },
+            "coverage_ratio": round(self.prose_lines / max(1, self.raw_lines), 4),
+            "errors": [],
+            "warnings": [],
+        }
+
+
+@dataclass
 class ScannedDocument:
     """Represents a scanned Markdown document with raw content and masked prose."""
     path: str  # Path relative to scanning root
@@ -35,16 +76,16 @@ class ScannedDocument:
     prose_lines: list[str]
     word_count: int
     char_count: int
+    masking_diagnostics: MaskingDiagnostics | None = None
 
     @property
     def prose_content(self) -> str:
         return "\n".join(self.prose_lines)
 
 
-def mask_markdown_prose(raw_content: str) -> list[str]:
+def mask_markdown_prose_detailed(raw_content: str) -> tuple[list[str], MaskingDiagnostics]:
     """
-    Mask non-prose elements (code blocks, frontmatter, inline code, HTML comments)
-    while strictly preserving line numbers and character lengths where possible.
+    Mask non-prose elements while tracking exact counts of masked constructs.
     """
     lines = raw_content.splitlines()
     prose_lines: list[str] = []
@@ -54,41 +95,49 @@ def mask_markdown_prose(raw_content: str) -> list[str]:
     fence_char = ""
     in_html_comment = False
 
-    # Check for frontmatter at the very top of file
+    frontmatter_lines = 0
+    code_fence_lines = 0
+    html_comment_lines = 0
+    inline_code_spans = 0
+    link_spans = 0
+
     starts_with_frontmatter = len(lines) > 0 and lines[0].strip() == "---"
 
     for idx, line in enumerate(lines):
-        # Handle YAML frontmatter at start
         if idx == 0 and starts_with_frontmatter:
             in_frontmatter = True
+            frontmatter_lines += 1
             prose_lines.append("")
             continue
 
         if in_frontmatter:
+            frontmatter_lines += 1
             if line.strip() == "---":
                 in_frontmatter = False
             prose_lines.append("")
             continue
 
-        # Handle multi-line HTML comments
         stripped = line.strip()
         if in_html_comment:
+            html_comment_lines += 1
             if "-->" in line:
                 in_html_comment = False
             prose_lines.append("")
             continue
         elif stripped.startswith("<!--") and "-->" not in line:
             in_html_comment = True
+            html_comment_lines += 1
             prose_lines.append("")
             continue
         elif stripped.startswith("<!--") and stripped.endswith("-->"):
+            html_comment_lines += 1
             prose_lines.append("")
             continue
 
-        # Handle fenced code blocks (``` or ~~~)
         fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
         if fence_match:
             fence = fence_match.group(1)
+            code_fence_lines += 1
             if not in_code_fence:
                 in_code_fence = True
                 fence_char = fence[0]
@@ -101,20 +150,52 @@ def mask_markdown_prose(raw_content: str) -> list[str]:
                 continue
 
         if in_code_fence:
+            code_fence_lines += 1
             prose_lines.append("")
             continue
 
-        # For normal prose line, mask inline code: `code` -> spaces of same length
+        # Count and mask inline code
+        inline_code_matches = len(re.findall(r"`[^`\n]+`", line))
+        inline_code_spans += inline_code_matches
         prose_line = re.sub(r"`[^`\n]+`", lambda m: " " * len(m.group(0)), line)
-        # Mask image links: ![alt](url) -> ![alt]()
+
+        # Count and mask links
+        link_matches = (
+            len(re.findall(r"!\[([^\]]*)\]\([^)]+\)", prose_line))
+            + len(re.findall(r"\[([^\]]+)\]\((?:https?://|mailto:|file://)[^)]+\)", prose_line))
+            + len(re.findall(r"<https?://[^>]+>", prose_line))
+        )
+        link_spans += link_matches
+
         prose_line = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", prose_line)
-        # Mask raw URLs in markdown links: [text](http://...) -> text
         prose_line = re.sub(r"\[([^\]]+)\]\((?:https?://|mailto:|file://)[^)]+\)", r"\1", prose_line)
-        # Mask autolinks: <https://...> -> spaces
         prose_line = re.sub(r"<https?://[^>]+>", lambda m: " " * len(m.group(0)), prose_line)
 
         prose_lines.append(prose_line)
 
+    words = count_prose_words(prose_lines)
+    masked_lines_count = sum(1 for r, p in zip(lines, prose_lines) if r != p)
+    diag = MaskingDiagnostics(
+        raw_characters=len(raw_content),
+        raw_lines=len(lines),
+        prose_lines=len(prose_lines),
+        masked_lines=masked_lines_count,
+        prose_words=words,
+        frontmatter_lines=frontmatter_lines,
+        code_fence_lines=code_fence_lines,
+        html_comment_lines=html_comment_lines,
+        inline_code_spans=inline_code_spans,
+        link_spans=link_spans,
+    )
+    return prose_lines, diag
+
+
+def mask_markdown_prose(raw_content: str) -> list[str]:
+    """
+    Mask non-prose elements (code blocks, frontmatter, inline code, HTML comments)
+    while strictly preserving line numbers and character lengths where possible.
+    """
+    prose_lines, _ = mask_markdown_prose_detailed(raw_content)
     return prose_lines
 
 
@@ -124,7 +205,7 @@ def count_prose_words(prose_lines: Sequence[str]) -> int:
     # Strip markdown headers, table separators, etc.
     cleaned = re.sub(r"[#*_~`|\-\+]+", " ", text)
     words = [w for w in re.split(r"\s+", cleaned) if w.strip()]
-    return max(1, len(words))
+    return len(words)
 
 
 def scan_directory(
@@ -150,7 +231,7 @@ def scan_directory(
         if root_path.suffix.lower() in {".md", ".markdown"}:
             raw = root_path.read_text(encoding="utf-8", errors="replace")
             raw_lines = raw.splitlines()
-            prose_lines = mask_markdown_prose(raw)
+            prose_lines, diag = mask_markdown_prose_detailed(raw)
             words = count_prose_words(prose_lines)
             documents.append(
                 ScannedDocument(
@@ -161,6 +242,7 @@ def scan_directory(
                     prose_lines=prose_lines,
                     word_count=words,
                     char_count=len(raw),
+                    masking_diagnostics=diag,
                 )
             )
         return documents
@@ -193,7 +275,7 @@ def scan_directory(
                 continue
 
             raw_lines = raw.splitlines()
-            prose_lines = mask_markdown_prose(raw)
+            prose_lines, diag = mask_markdown_prose_detailed(raw)
             words = count_prose_words(prose_lines)
 
             documents.append(
@@ -205,6 +287,7 @@ def scan_directory(
                     prose_lines=prose_lines,
                     word_count=words,
                     char_count=len(raw),
+                    masking_diagnostics=diag,
                 )
             )
 

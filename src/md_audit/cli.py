@@ -91,6 +91,7 @@ def run_audit(
 
     doc_scores = []
     findings_by_file = {}
+    diagnostics_by_file = {}
     model_evaluations = []
 
     model_evaluator = None
@@ -136,8 +137,29 @@ def run_audit(
         )
         doc_scores.append(d_score)
 
+        # Collect component diagnostics for this document
+        masking_diag = doc.masking_diagnostics.to_diagnostics() if doc.masking_diagnostics else {}
+        yaml_diag = deterministic_analyzer.get_document_diagnostics(doc.path)
+        burst_diag = burstiness.to_burstiness_diagnostics()
+        read_diag = burstiness.to_readability_diagnostics()
+        rep_diag = repetition.to_diagnostics()
+        score_diag = d_score.scoring_diagnostics
+
+        diagnostics_by_file[doc.path] = {
+            "markdown_masker": masking_diag,
+            "yaml_rule_analyzer": yaml_diag,
+            "repetition_analyzer": rep_diag,
+            "burstiness_analyzer": burst_diag,
+            "readability_analyzer": read_diag,
+            "quality_scorer": score_diag,
+        }
+
     dir_score = scorer.aggregate_directory(doc_scores)
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    engine_diagnostics = {
+        "rules_loader": deterministic_analyzer.loader_diagnostics,
+    }
 
     return AuditReport(
         directory=str(target_dir),
@@ -149,6 +171,8 @@ def run_audit(
         findings_by_file=findings_by_file,
         model_evaluations=model_evaluations if enable_model else None,
         config_summary=config,
+        diagnostics_by_file=diagnostics_by_file,
+        engine_diagnostics=engine_diagnostics,
     )
 
 

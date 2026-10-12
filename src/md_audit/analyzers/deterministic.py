@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 import yaml
 
 from ..scanner import ScannedDocument
@@ -47,6 +48,7 @@ class Rule:
     pattern: re.Pattern
     message: str
     suggestion: str
+    source_file: str = ""
 
 
 # Common terminology pairs where mixing variants signals inconsistency
@@ -63,85 +65,268 @@ INCONSISTENT_TERM_PAIRS = [
 class DeterministicAnalyzer:
     """Evaluates Markdown prose against declarative style and AI-pattern rules."""
 
-    def __init__(self, rules: Sequence[Rule] | None = None):
+    def __init__(
+        self,
+        rules: Sequence[Rule] | None = None,
+        loader_diagnostics: dict[str, Any] | None = None,
+    ):
         self.rules: list[Rule] = list(rules) if rules else []
+        self.loader_diagnostics: dict[str, Any] = loader_diagnostics or {
+            "rules_dir": "",
+            "files_scanned": [],
+            "rules_loaded_count": len(self.rules),
+            "rules_failed_count": 0,
+            "rules_loaded": [
+                {
+                    "id": r.id,
+                    "category": r.category,
+                    "severity": r.severity,
+                    "pattern": r.pattern.pattern,
+                    "source_file": r.source_file,
+                }
+                for r in self.rules
+            ],
+            "rules_failed": [],
+        }
+        self.last_diagnostics: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def from_rules_directory(cls, rules_dir: str | Path) -> DeterministicAnalyzer:
-        """Load all YAML rules from a directory."""
+        """Load all YAML rules from a directory with full diagnostics."""
         dir_path = Path(rules_dir).resolve()
         if not dir_path.exists():
-            return cls([])
+            return cls([], loader_diagnostics={
+                "rules_dir": str(dir_path),
+                "files_scanned": [],
+                "rules_loaded_count": 0,
+                "rules_failed_count": 0,
+                "rules_loaded": [],
+                "rules_failed": [],
+                "warning": f"Rules directory does not exist: {dir_path}",
+            })
 
         loaded_rules: list[Rule] = []
-        for yaml_file in dir_path.glob("*.yaml"):
-            try:
-                data = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
-                if not data or not isinstance(data, dict):
-                    continue
-                default_cat = data.get("category", "ai_patterns")
-                for r_def in data.get("rules", []):
-                    r_id = r_def.get("id", "rule.unknown")
-                    cat = r_def.get("category", default_cat)
-                    sev = r_def.get("severity", "warning")
-                    pat_str = r_def.get("pattern", "")
-                    msg = r_def.get("message", "")
-                    sug = r_def.get("suggestion", "")
+        files_scanned: list[str] = []
+        rules_loaded_info: list[dict[str, Any]] = []
+        rules_failed_info: list[dict[str, Any]] = []
 
-                    if pat_str:
-                        compiled = re.compile(pat_str)
-                        loaded_rules.append(
-                            Rule(
-                                id=r_id,
-                                category=cat,
-                                severity=sev,
-                                pattern=compiled,
-                                message=msg,
-                                suggestion=sug,
-                            )
-                        )
+        for yaml_file in sorted(dir_path.glob("*.yaml")):
+            file_name = yaml_file.name
+            files_scanned.append(file_name)
+            try:
+                raw_text = yaml_file.read_text(encoding="utf-8")
+                data = yaml.safe_load(raw_text)
             except Exception as e:
-                # Log or handle rule load error
+                rules_failed_info.append({
+                    "source_file": file_name,
+                    "rule_id": None,
+                    "error": f"YAML parse error: {e}",
+                })
                 continue
 
-        return cls(loaded_rules)
+            if not data or not isinstance(data, dict):
+                rules_failed_info.append({
+                    "source_file": file_name,
+                    "rule_id": None,
+                    "error": "File root is not a valid YAML mapping",
+                })
+                continue
+
+            default_cat = data.get("category", "ai_patterns")
+            rule_defs = data.get("rules", [])
+            if not isinstance(rule_defs, list):
+                rules_failed_info.append({
+                    "source_file": file_name,
+                    "rule_id": None,
+                    "error": "'rules' key is not a list",
+                })
+                continue
+
+            for r_def in rule_defs:
+                if not isinstance(r_def, dict):
+                    rules_failed_info.append({
+                        "source_file": file_name,
+                        "rule_id": None,
+                        "error": "Rule entry is not a dictionary",
+                    })
+                    continue
+
+                r_id = r_def.get("id", "rule.unknown")
+                cat = r_def.get("category", default_cat)
+                sev = r_def.get("severity", "warning")
+                pat_str = r_def.get("pattern", "")
+                msg = r_def.get("message", "")
+                sug = r_def.get("suggestion", "")
+
+                if not pat_str:
+                    rules_failed_info.append({
+                        "source_file": file_name,
+                        "rule_id": r_id,
+                        "error": "Missing or empty 'pattern' definition",
+                    })
+                    continue
+
+                try:
+                    compiled = re.compile(pat_str)
+                    rule_obj = Rule(
+                        id=r_id,
+                        category=cat,
+                        severity=sev,
+                        pattern=compiled,
+                        message=msg,
+                        suggestion=sug,
+                        source_file=file_name,
+                    )
+                    loaded_rules.append(rule_obj)
+                    rules_loaded_info.append({
+                        "id": r_id,
+                        "category": cat,
+                        "severity": sev,
+                        "pattern": pat_str,
+                        "source_file": file_name,
+                    })
+                except re.error as e:
+                    rules_failed_info.append({
+                        "source_file": file_name,
+                        "rule_id": r_id,
+                        "pattern": pat_str,
+                        "error": f"Invalid regular expression: {e}",
+                    })
+
+        loader_diag = {
+            "rules_dir": str(dir_path),
+            "files_scanned": files_scanned,
+            "rules_loaded_count": len(loaded_rules),
+            "rules_failed_count": len(rules_failed_info),
+            "rules_loaded": rules_loaded_info,
+            "rules_failed": rules_failed_info,
+        }
+        return cls(loaded_rules, loader_diagnostics=loader_diag)
 
     def analyze(self, doc: ScannedDocument) -> list[Finding]:
-        """Analyze a scanned document and return all rule findings."""
+        """Analyze a scanned document and return all rule findings with execution diagnostics."""
+        t0 = time.perf_counter()
         findings: list[Finding] = []
 
-        # 1. Line-by-line regex rule checks
-        for line_idx, line in enumerate(doc.prose_lines, start=1):
-            if not line.strip():
-                continue
+        non_empty_line_indices = [
+            (idx, line) for idx, line in enumerate(doc.prose_lines, start=1) if line.strip()
+        ]
+        non_empty_count = len(non_empty_line_indices)
+
+        # Track per-rule match evidence
+        rule_evaluations: list[dict[str, Any]] = []
+        total_line_checks = 0
+
+        if non_empty_count == 0 or doc.word_count == 0:
+            status = "not_applicable"
+            reason = "Insufficient analysable text (0 prose words)"
+            # Initialize empty rule evaluations
+            for rule in self.rules:
+                rule_evaluations.append({
+                    "rule_id": rule.id,
+                    "category": rule.category,
+                    "severity": rule.severity,
+                    "pattern": rule.pattern.pattern,
+                    "source_file": rule.source_file,
+                    "match_count": 0,
+                    "matches": [],
+                })
+        else:
+            status = "executed"
+            reason = None
 
             for rule in self.rules:
-                for match in rule.pattern.finditer(line):
-                    col = match.start() + 1
-                    matched_str = match.group(0).strip()
-                    findings.append(
-                        Finding(
-                            file_path=doc.path,
-                            line_number=line_idx,
-                            column=col,
-                            rule_id=rule.id,
-                            category=rule.category,
-                            severity=rule.severity,
-                            matched_text=matched_str,
-                            explanation=rule.message,
-                            suggested_improvement=rule.suggestion,
+                rule_matches = []
+                for line_idx, line in non_empty_line_indices:
+                    total_line_checks += 1
+                    for match in rule.pattern.finditer(line):
+                        col = match.start() + 1
+                        matched_str = match.group(0).strip()
+                        findings.append(
+                            Finding(
+                                file_path=doc.path,
+                                line_number=line_idx,
+                                column=col,
+                                rule_id=rule.id,
+                                category=rule.category,
+                                severity=rule.severity,
+                                matched_text=matched_str,
+                                explanation=rule.message,
+                                suggested_improvement=rule.suggestion,
+                            )
                         )
-                    )
+                        rule_matches.append({
+                            "line": line_idx,
+                            "column": col,
+                            "matched_text": matched_str,
+                        })
 
-        # 2. Multi-line analysis: Repeated sentence openings
-        findings.extend(self._check_repeated_openings(doc))
+                rule_evaluations.append({
+                    "rule_id": rule.id,
+                    "category": rule.category,
+                    "severity": rule.severity,
+                    "pattern": rule.pattern.pattern,
+                    "source_file": rule.source_file,
+                    "match_count": len(rule_matches),
+                    "matches": rule_matches,
+                })
 
-        # 3. Terminology consistency check
-        findings.extend(self._check_inconsistent_terms(doc))
+        # Multi-line checks
+        openings_findings = self._check_repeated_openings(doc) if status == "executed" else []
+        findings.extend(openings_findings)
+
+        terms_findings = self._check_inconsistent_terms(doc) if status == "executed" else []
+        findings.extend(terms_findings)
 
         # Sort findings by line and column
         findings.sort(key=lambda f: (f.line_number, f.column))
+
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        checks_performed = total_line_checks + len(INCONSISTENT_TERM_PAIRS) + 1
+        checks_triggered = len(findings)
+
+        self.last_diagnostics[doc.path] = {
+            "component": "yaml_rule_analyzer",
+            "implementation": "md_audit.analyzers.deterministic.DeterministicAnalyzer",
+            "version": "1.0.0",
+            "status": status,
+            "reason": reason,
+            "input_size": {
+                "raw_characters": doc.char_count,
+                "raw_lines": len(doc.raw_lines),
+                "prose_lines": len(doc.prose_lines),
+                "prose_words": doc.word_count,
+                "non_empty_prose_lines": non_empty_count,
+            },
+            "rules_count_total": len(self.rules),
+            "rules_evaluated_count": len(self.rules) if status == "executed" else 0,
+            "rules_triggered_count": sum(1 for r in rule_evaluations if r["match_count"] > 0),
+            "rules_evaluated": rule_evaluations,
+            "multi_line_checks": {
+                "repeated_sentence_openings": {
+                    "evaluated": status == "executed",
+                    "findings_count": len(openings_findings),
+                },
+                "terminology_consistency": {
+                    "evaluated": status == "executed",
+                    "pairs_checked": len(INCONSISTENT_TERM_PAIRS),
+                    "findings_count": len(terms_findings),
+                },
+            },
+            "checks_performed": checks_performed,
+            "checks_triggered": checks_triggered,
+            "findings_count": len(findings),
+            "findings": [f.to_dict() for f in findings],
+            "duration_ms": elapsed_ms,
+            "errors": [],
+            "warnings": [],
+        }
+
         return findings
+
+    def get_document_diagnostics(self, doc_path: str) -> dict[str, Any]:
+        """Retrieve execution diagnostics for a specific analyzed document."""
+        return self.last_diagnostics.get(doc_path, {})
 
     def _check_repeated_openings(self, doc: ScannedDocument) -> list[Finding]:
         """Detect sequences of 3+ consecutive sentences starting with the same word."""

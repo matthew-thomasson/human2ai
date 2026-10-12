@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import Counter
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, field
+from typing import Any, Sequence
 
 from ..scanner import ScannedDocument
 from .deterministic import Finding
@@ -20,10 +21,50 @@ COMMON_STOPWORDS = {
 
 @dataclass
 class RepetitionMetrics:
-    """Metrics regarding lexical and structural repetition."""
+    """Metrics regarding lexical and structural repetition with full execution diagnostics."""
     paragraph_count: int
     repeated_phrases: list[tuple[str, int]]
     findings: list[Finding]
+    transitions: dict[str, int] = field(default_factory=dict)
+    sentence_openings: list[dict[str, Any]] = field(default_factory=list)
+    transition_threshold: int = 2
+    n_gram_threshold: int = 3
+    status: str = "executed"
+    reason: str | None = None
+    checks_performed: int = 0
+    checks_triggered: int = 0
+    duration_ms: float = 0.0
+
+    def to_diagnostics(self) -> dict[str, Any]:
+        return {
+            "component": "repetition_analyzer",
+            "implementation": "md_audit.analyzers.repetition.analyze_repetition",
+            "version": "1.0.0",
+            "status": self.status,
+            "reason": self.reason,
+            "paragraph_count": self.paragraph_count,
+            "transitions": {
+                "threshold": self.transition_threshold,
+                "counts": self.transitions,
+                "triggered": [t for t, c in self.transitions.items() if c >= self.transition_threshold],
+            },
+            "repeated_phrases": [
+                {
+                    "phrase": phrase,
+                    "count": cnt,
+                    "threshold": self.n_gram_threshold,
+                    "triggered": cnt >= self.n_gram_threshold,
+                }
+                for phrase, cnt in self.repeated_phrases
+            ],
+            "sentence_openings": self.sentence_openings,
+            "checks_performed": self.checks_performed,
+            "checks_triggered": self.checks_triggered,
+            "findings_count": len(self.findings),
+            "duration_ms": self.duration_ms,
+            "errors": [],
+            "warnings": [],
+        }
 
 
 def extract_paragraphs(prose_lines: Sequence[str]) -> list[tuple[int, str]]:
@@ -50,20 +91,44 @@ def extract_paragraphs(prose_lines: Sequence[str]) -> list[tuple[int, str]]:
 
 
 def analyze_repetition(doc: ScannedDocument) -> RepetitionMetrics:
-    """Detect repetitive phrasing and formulaic paragraph structures."""
+    """Detect repetitive phrasing and formulaic paragraph structures with diagnostics."""
+    t0 = time.perf_counter()
     findings: list[Finding] = []
     paragraphs = extract_paragraphs(doc.prose_lines)
 
-    # 1. Check for repetitive paragraph starter transitions
-    starter_counts: Counter[str] = Counter()
+    transition_words = ["moreover", "furthermore", "additionally", "consequently", "importantly", "notably"]
+    starter_counts: dict[str, int] = {t: 0 for t in transition_words}
     starter_lines: dict[str, int] = {}
-    transition_words = {"moreover", "furthermore", "additionally", "consequently", "importantly", "notably"}
+    sentence_openings: list[dict[str, Any]] = []
 
+    if not paragraphs or doc.word_count == 0:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        return RepetitionMetrics(
+            paragraph_count=0,
+            repeated_phrases=[],
+            findings=[],
+            transitions=starter_counts,
+            sentence_openings=[],
+            transition_threshold=2,
+            n_gram_threshold=3,
+            status="not_applicable",
+            reason="Insufficient analysable text (0 paragraphs or words)",
+            checks_performed=0,
+            checks_triggered=0,
+            duration_ms=elapsed_ms,
+        )
+
+    # 1. Check for repetitive paragraph starter transitions
     for start_line, p_text in paragraphs:
         words = re.findall(r"\b[A-Za-z]+\b", p_text)
         if words:
             first_word = words[0].lower()
-            if first_word in transition_words:
+            opening_entry = {"line": start_line, "first_word": first_word}
+            if len(words) >= 2:
+                opening_entry["opening_words"] = f"{words[0]} {words[1]}"
+            sentence_openings.append(opening_entry)
+
+            if first_word in starter_counts:
                 starter_counts[first_word] += 1
                 if first_word not in starter_lines:
                     starter_lines[first_word] = start_line
@@ -112,8 +177,21 @@ def analyze_repetition(doc: ScannedDocument) -> RepetitionMetrics:
                 )
             )
 
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+    checks_performed = len(transition_words) + len(tri_counts)
+    checks_triggered = len(findings)
+
     return RepetitionMetrics(
         paragraph_count=len(paragraphs),
         repeated_phrases=repeated_phrases,
         findings=findings,
+        transitions=starter_counts,
+        sentence_openings=sentence_openings,
+        transition_threshold=2,
+        n_gram_threshold=3,
+        status="executed",
+        reason=None,
+        checks_performed=checks_performed,
+        checks_triggered=checks_triggered,
+        duration_ms=elapsed_ms,
     )

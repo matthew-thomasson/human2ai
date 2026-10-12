@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
-from typing import Sequence
+import time
+from dataclasses import dataclass, field
+from typing import Any, Sequence
 
 from ..scanner import ScannedDocument
 from .deterministic import Finding
@@ -13,13 +14,92 @@ from .deterministic import Finding
 
 @dataclass
 class BurstinessMetrics:
-    """Readability and sentence rhythm metrics."""
+    """Readability and sentence rhythm metrics with complete execution diagnostics."""
     sentence_count: int
     mean_length: float
     std_length: float
     coefficient_of_variation: float  # std / mean (burstiness)
     flesch_reading_ease: float
     findings: list[Finding]
+    total_words: int = 0
+    total_syllables: int = 0
+    words_per_sentence: float = 0.0
+    syllables_per_word: float = 0.0
+    min_cv_threshold: float = 0.40
+    min_sentences_threshold: int = 6
+    dense_fre_threshold: float = 25.0
+    dense_mean_len_threshold: float = 24.0
+    dense_sentences_threshold: int = 4
+    status: str = "executed"
+    reason: str | None = None
+    duration_ms: float = 0.0
+
+    def to_burstiness_diagnostics(self) -> dict[str, Any]:
+        return {
+            "component": "burstiness_analyzer",
+            "implementation": "md_audit.analyzers.burstiness.analyze_burstiness",
+            "version": "1.0.0",
+            "status": self.status,
+            "reason": self.reason,
+            "sentence_count": self.sentence_count,
+            "mean_sentence_length": self.mean_length,
+            "std_sentence_length": self.std_length,
+            "coefficient_of_variation": self.coefficient_of_variation,
+            "thresholds": {
+                "min_cv": self.min_cv_threshold,
+                "min_sentences": self.min_sentences_threshold,
+            },
+            "comparison": {
+                "evaluated": self.sentence_count >= self.min_sentences_threshold,
+                "triggered": (
+                    self.sentence_count >= self.min_sentences_threshold
+                    and self.coefficient_of_variation < self.min_cv_threshold
+                ),
+                "threshold_diff": (
+                    round(self.coefficient_of_variation - self.min_cv_threshold, 4)
+                    if self.status == "executed"
+                    else None
+                ),
+            },
+            "findings_count": sum(1 for f in self.findings if f.rule_id == "readability.low_burstiness"),
+            "duration_ms": self.duration_ms,
+            "errors": [],
+            "warnings": [],
+        }
+
+    def to_readability_diagnostics(self) -> dict[str, Any]:
+        return {
+            "component": "readability_analyzer",
+            "implementation": "md_audit.analyzers.burstiness.analyze_burstiness",
+            "version": "1.0.0",
+            "status": self.status,
+            "reason": self.reason,
+            "flesch_reading_ease": self.flesch_reading_ease,
+            "underlying_counts": {
+                "total_words": self.total_words,
+                "total_syllables": self.total_syllables,
+                "sentence_count": self.sentence_count,
+                "words_per_sentence": round(self.words_per_sentence, 2),
+                "syllables_per_word": round(self.syllables_per_word, 2),
+            },
+            "dense_prose_thresholds": {
+                "fre_max": self.dense_fre_threshold,
+                "mean_len_min": self.dense_mean_len_threshold,
+                "sentences_min": self.dense_sentences_threshold,
+            },
+            "dense_prose_comparison": {
+                "evaluated": self.sentence_count >= self.dense_sentences_threshold,
+                "triggered": (
+                    self.flesch_reading_ease < self.dense_fre_threshold
+                    and self.mean_length > self.dense_mean_len_threshold
+                    and self.sentence_count >= self.dense_sentences_threshold
+                ),
+            },
+            "findings_count": sum(1 for f in self.findings if f.rule_id == "readability.dense_prose"),
+            "duration_ms": self.duration_ms,
+            "errors": [],
+            "warnings": [],
+        }
 
 
 def count_syllables(word: str) -> int:
@@ -75,13 +155,15 @@ def analyze_burstiness(
     target_fre: float = 60.0,
 ) -> BurstinessMetrics:
     """
-    Calculate sentence variation (burstiness) and readability metrics.
+    Calculate sentence variation (burstiness) and readability metrics with diagnostics.
     Emits findings if sentence structures are overly uniform.
     """
+    t0 = time.perf_counter()
     sentences = extract_sentences(doc.prose_lines)
     findings: list[Finding] = []
 
-    if not sentences:
+    if not sentences or doc.word_count == 0:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
         return BurstinessMetrics(
             sentence_count=0,
             mean_length=0.0,
@@ -89,6 +171,18 @@ def analyze_burstiness(
             coefficient_of_variation=1.0,
             flesch_reading_ease=70.0,
             findings=[],
+            total_words=0,
+            total_syllables=0,
+            words_per_sentence=0.0,
+            syllables_per_word=0.0,
+            min_cv_threshold=min_cv,
+            min_sentences_threshold=6,
+            dense_fre_threshold=25.0,
+            dense_mean_len_threshold=24.0,
+            dense_sentences_threshold=4,
+            status="not_applicable",
+            reason="Insufficient analysable text (0 sentences or words)",
+            duration_ms=elapsed_ms,
         )
 
     lengths = [len(re.findall(r"\b[A-Za-z0-9_-]+\b", s)) for s in sentences]
@@ -149,6 +243,8 @@ def analyze_burstiness(
             )
         )
 
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+
     return BurstinessMetrics(
         sentence_count=n,
         mean_length=round(mean_len, 2),
@@ -156,4 +252,16 @@ def analyze_burstiness(
         coefficient_of_variation=round(cv, 2),
         flesch_reading_ease=round(fre, 1),
         findings=findings,
+        total_words=total_words,
+        total_syllables=total_syllables,
+        words_per_sentence=round(words_per_sentence, 2),
+        syllables_per_word=round(syllables_per_word, 2),
+        min_cv_threshold=min_cv,
+        min_sentences_threshold=6,
+        dense_fre_threshold=25.0,
+        dense_mean_len_threshold=24.0,
+        dense_sentences_threshold=4,
+        status="executed",
+        reason=None,
+        duration_ms=elapsed_ms,
     )

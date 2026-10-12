@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 from .analyzers.burstiness import BurstinessMetrics
 from .analyzers.deterministic import Finding
@@ -34,6 +34,7 @@ class DocumentScore:
     findings_count: int
     rubric_breakdown: dict[str, str] = field(default_factory=dict)
     model_score: int | None = None  # Kept explicitly separate
+    scoring_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -52,7 +53,7 @@ class DirectoryScore:
 
 
 class QualityScorer:
-    """Calculates explainable, length-normalized writing quality scores."""
+    """Calculates explainable, length-normalized writing quality scores with complete penalty tracing."""
 
     def __init__(
         self,
@@ -71,7 +72,7 @@ class QualityScorer:
         repetition: RepetitionMetrics | None = None,
         model_score: int | None = None,
     ) -> DocumentScore:
-        """Calculate length-normalized 0-100 scores across 5 quality categories."""
+        """Calculate length-normalized 0-100 scores across 5 quality categories with full calculation diagnostics."""
         # Minimum effective word count prevents division explosions on tiny stubs
         effective_words = max(80, word_count)
         normalization_factor = 1000.0 / effective_words
@@ -84,6 +85,7 @@ class QualityScorer:
 
         category_scores: dict[str, int] = {}
         rubric_breakdown: dict[str, str] = {}
+        categories_diag: dict[str, Any] = {}
 
         # Sublinear length-normalization prevents document length alone from dominating
         # Power scaling (words^0.65) ensures fair density scaling across short (100w) and long (3000w) docs
@@ -93,19 +95,40 @@ class QualityScorer:
             # Sum weighted severity penalties
             raw_penalty = sum(self.penalties.get(f.severity, 4.0) for f in cat_list)
             normalized_penalty = (raw_penalty / scaled_denom) * 22.0
+            special_adj = 0.0
 
             # Special adjustments for readability
             if cat == "readability" and burstiness:
                 if burstiness.sentence_count >= 5 and burstiness.coefficient_of_variation < 0.22:
-                    normalized_penalty += 10.0
+                    special_adj = 10.0
 
-            final_cat_score = max(0, min(100, int(round(100.0 - normalized_penalty))))
+            total_penalty = normalized_penalty + special_adj
+            unrounded_cat = 100.0 - total_penalty
+            final_cat_score = max(0, min(100, int(round(unrounded_cat))))
             category_scores[cat] = final_cat_score
 
+            weight = self.weights.get(cat, 0.20)
+            weighted_contrib = final_cat_score * weight
+
             rubric_breakdown[cat] = (
-                f"Base 100 - {normalized_penalty:.1f} penalty "
+                f"Base 100 - {total_penalty:.1f} penalty "
                 f"({len(cat_list)} issues normalized for {word_count} words) = {final_cat_score}/100"
             )
+
+            categories_diag[cat] = {
+                "weight": weight,
+                "findings_count": len(cat_list),
+                "raw_penalty": round(raw_penalty, 2),
+                "scaled_denominator": round(scaled_denom, 4),
+                "normalized_penalty": round(normalized_penalty, 4),
+                "special_adjustment": round(special_adj, 2),
+                "total_penalty": round(total_penalty, 4),
+                "base_score": 100.0,
+                "unrounded_score": round(unrounded_cat, 4),
+                "final_category_score": final_cat_score,
+                "weighted_contribution": round(weighted_contrib, 4),
+                "zero_penalty": (total_penalty == 0.0),
+            }
 
         # Calculate weighted overall score
         overall_float = sum(
@@ -113,6 +136,26 @@ class QualityScorer:
             for cat in self.weights
         )
         overall_score = max(0, min(100, int(round(overall_float))))
+
+        scoring_diagnostics = {
+            "component": "quality_scorer",
+            "implementation": "md_audit.scoring.QualityScorer",
+            "version": "1.0.0",
+            "status": "executed" if word_count > 0 else "not_applicable",
+            "reason": None if word_count > 0 else "Insufficient analysable text (0 words)",
+            "effective_words": effective_words,
+            "word_count": word_count,
+            "scaled_denominator": round(scaled_denom, 4),
+            "scaling_formula": "max(120, word_count) ** 0.65",
+            "category_weights": self.weights,
+            "severity_penalties": self.penalties,
+            "categories": categories_diag,
+            "overall": {
+                "unrounded_sum": round(overall_float, 4),
+                "rounding_rule": "int(round(sum(category_scores[c] * weight[c]))) clamped to [0, 100]",
+                "final_overall_score": overall_score,
+            },
+        }
 
         return DocumentScore(
             file_path=file_path,
@@ -122,6 +165,7 @@ class QualityScorer:
             findings_count=len(findings),
             rubric_breakdown=rubric_breakdown,
             model_score=model_score,
+            scoring_diagnostics=scoring_diagnostics,
         )
 
     def aggregate_directory(
