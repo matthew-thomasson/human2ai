@@ -7,3 +7,5 @@ revised/
 reports/
 .venv/
 venv/
+build/
+dist/
