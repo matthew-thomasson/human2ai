@@ -237,25 +237,28 @@ def handle_improve(args: argparse.Namespace) -> int:
     if not args.preview:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Improving Markdown documents from: {args.directory}")
     mode_str = f"LLM ({args.mode})" if args.llm else "Deterministic"
     if args.offline:
         mode_str += " [offline-simulation]"
-    print(f"Engine mode: {mode_str}")
-    if args.review:
-        rev_model = args.reviewer_model or config.get("reviewer", {}).get("model", "qwen/qwen-2.5-72b-instruct")
-        print(f"Reviewer: Enabled ({rev_model})")
 
-    if args.preview:
-        print("Mode: PREVIEW (no files will be written)\n")
-    else:
-        print(f"Output directory: {output_dir.resolve()}\n")
+    if getattr(args, "format", "text") != "json":
+        print(f"Improving Markdown documents from: {args.directory}")
+        print(f"Engine mode: {mode_str}")
+        if args.review:
+            rev_model = args.reviewer_model or config.get("reviewer", {}).get("model", "qwen/qwen-2.5-72b-instruct")
+            print(f"Reviewer: Enabled ({rev_model})")
+
+        if args.preview:
+            print("Mode: PREVIEW (no files will be written)\n")
+        else:
+            print(f"Output directory: {output_dir.resolve()}\n")
 
     improved_count = 0
     accepted_count = 0
     rejected_count = 0
     manual_review_count = 0
     unreviewed_count = 0
+    processed_records: list[tuple[ScannedDocument, EditorialResult]] = []
 
     for doc in documents:
         try:
@@ -269,65 +272,129 @@ def handle_improve(args: argparse.Namespace) -> int:
             print(f"Error processing {doc.path} with LLM: {e}", file=sys.stderr)
             return 1
 
+        processed_records.append((doc, res))
         content_to_write = doc.raw_content
 
         if not res.has_proposed_changes:
-            print(f"[UNCHANGED] {doc.path} (already clean)")
+            if getattr(args, "format", "text") != "json":
+                print(f"[UNCHANGED] {doc.path} (already clean)")
         elif not res.validation.is_valid:
             # Deterministic preservation gate failed
             rejected_count += 1
-            print(f"[REJECTED - SAFETY GATE] {doc.path}: Material changes detected.")
-            for change in res.validation.material_changes:
-                print(f"  - {change.change_type} ({change.severity}): {change.explanation}")
+            if getattr(args, "format", "text") != "json":
+                print(f"[REJECTED - SAFETY GATE] {doc.path}: Material changes detected.")
+                for change in res.validation.material_changes:
+                    print(f"  - {change.change_type} ({change.severity}): {change.explanation}")
         elif args.review and res.review:
             dec = res.review.decision
             if dec == "Accept":
                 accepted_count += 1
                 improved_count += 1
                 content_to_write = res.revised_content
-                print(f"[REVISED [REVIEW: ACCEPTED]] {doc.path}")
-                print(f"  Review verdict: Accept — {res.review.reason}")
-                if args.preview or args.diff:
-                    print(res.diff)
+                if getattr(args, "format", "text") != "json":
+                    print(f"[REVISED [REVIEW: ACCEPTED]] {doc.path}")
+                    print(f"  Review verdict: Accept — {res.review.reason}")
+                    if args.preview or args.diff:
+                        print(res.diff)
             elif dec == "Reject":
                 rejected_count += 1
-                print(f"[REJECTED [REVIEW: REJECTED]] {doc.path}")
-                print(f"  Review verdict: Reject — {res.review.reason}")
+                if getattr(args, "format", "text") != "json":
+                    print(f"[REJECTED [REVIEW: REJECTED]] {doc.path}")
+                    print(f"  Review verdict: Reject — {res.review.reason}")
             elif dec == "Review manually":
                 manual_review_count += 1
-                print(f"[MANUAL REVIEW REQUIRED] {doc.path}")
-                print(f"  Review verdict: Review manually — {res.review.reason}")
+                if getattr(args, "format", "text") != "json":
+                    print(f"[MANUAL REVIEW REQUIRED] {doc.path}")
+                    print(f"  Review verdict: Review manually — {res.review.reason}")
             elif dec == "Unreviewed":
                 unreviewed_count += 1
-                print(f"[UNREVIEWED] {doc.path}")
-                print(f"  Review verdict: Unreviewed — {res.review.reason}")
+                if getattr(args, "format", "text") != "json":
+                    print(f"[UNREVIEWED] {doc.path}")
+                    print(f"  Review verdict: Unreviewed — {res.review.reason}")
             else:
                 unreviewed_count += 1
-                print(f"[UNREVIEWED] {doc.path}")
-                print(f"  Review verdict: {dec} — {res.review.reason}")
+                if getattr(args, "format", "text") != "json":
+                    print(f"[UNREVIEWED] {doc.path}")
+                    print(f"  Review verdict: {dec} — {res.review.reason}")
         else:
             # No review requested, safety gate passed
             improved_count += 1
             content_to_write = res.revised_content
-            print(f"[REVISED] {doc.path}")
-            if args.preview or args.diff:
-                print(res.diff)
+            if getattr(args, "format", "text") != "json":
+                print(f"[REVISED] {doc.path}")
+                if args.preview or args.diff:
+                    print(res.diff)
 
         if not args.preview:
             dest_file = output_dir / doc.path
             dest_file.parent.mkdir(parents=True, exist_ok=True)
             dest_file.write_text(content_to_write, encoding="utf-8")
 
-    print("\nEditorial Summary:")
-    print(f"  Files processed: {len(documents)}")
-    print(f"  Files improved:  {improved_count}")
-    if args.review:
-        print(f"  Accepted:        {accepted_count}")
-        print(f"  Rejected:        {rejected_count}")
-        print(f"  Manual review:   {manual_review_count}")
-        print(f"  Unreviewed:      {unreviewed_count}")
-    if not args.preview:
-        print(f"  Output saved to: {output_dir.resolve()}")
+    report_dict = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tool_version": __version__,
+        "directory": str(args.directory),
+        "engine_mode": mode_str,
+        "is_llm": args.llm,
+        "mode": args.mode,
+        "editor_model": (args.model or config.get("llm_editor", {}).get("model", "deepseek/deepseek-chat")) if args.llm else None,
+        "reviewer_model": (args.reviewer_model or config.get("reviewer", {}).get("model", "qwen/qwen-2.5-72b-instruct")) if args.review else None,
+        "files_processed": len(documents),
+        "files_improved": improved_count,
+        "summary": {
+            "accepted": accepted_count,
+            "rejected": rejected_count,
+            "manual_review": manual_review_count,
+            "unreviewed": unreviewed_count,
+        },
+        "documents": [
+            {
+                "file": d.path,
+                "status": r.status,
+                "is_safe": r.is_safe,
+                "changes_count": r.changes_count,
+                "diff": r.diff,
+                "validation": {
+                    "is_valid": r.validation.is_valid,
+                    "material_changes": [
+                        {
+                            "change_type": c.change_type,
+                            "severity": c.severity,
+                            "explanation": c.explanation,
+                        }
+                        for c in r.validation.material_changes
+                    ],
+                },
+                "review": r.review.to_dict() if r.review else None,
+                "usage": r.usage,
+            }
+            for d, r in processed_records
+        ],
+    }
+
+    if getattr(args, "output_report", None):
+        import json
+        out_p = Path(args.output_report)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
+        if getattr(args, "format", "text") != "json":
+            print(f"Editorial report written to: {out_p.resolve()}")
+
+    if getattr(args, "format", "text") == "json":
+        import json
+        print(json.dumps(report_dict, indent=2))
+    else:
+        print("\nEditorial Summary:")
+        print(f"  Files processed: {len(documents)}")
+        print(f"  Files improved:  {improved_count}")
+        if args.review:
+            print(f"  Accepted:        {accepted_count}")
+            print(f"  Rejected:        {rejected_count}")
+            print(f"  Manual review:   {manual_review_count}")
+            print(f"  Unreviewed:      {unreviewed_count}")
+        if not args.preview:
+            print(f"  Output saved to: {output_dir.resolve()}")
+
     return 0
 
 
@@ -376,25 +443,65 @@ def handle_compare(args: argparse.Namespace) -> int:
                 )
                 diffs[rel_path] = "\n".join(diff_lines)
 
-    summary_text = format_comparison_summary(
-        before_report=before_report,
-        after_report=after_report,
-        files_changed=files_changed,
-        diffs=diffs,
-        validation_results=validation_results,
-        output_dir=args.revised_dir,
-    )
+    if getattr(args, "format", "text") == "json":
+        import json
+        comp_dict = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "original_dir": str(args.original_dir),
+            "revised_dir": str(args.revised_dir),
+            "files_analysed": len(orig_docs),
+            "files_changed": files_changed,
+            "scores": {
+                "before": before_report.directory_score.overall_score,
+                "after": after_report.directory_score.overall_score,
+                "delta": after_report.directory_score.overall_score - before_report.directory_score.overall_score,
+            },
+            "category_scores": {
+                cat: {
+                    "before": before_report.directory_score.category_scores.get(cat, 0),
+                    "after": after_report.directory_score.category_scores.get(cat, 0),
+                    "delta": after_report.directory_score.category_scores.get(cat, 0) - before_report.directory_score.category_scores.get(cat, 0),
+                }
+                for cat in before_report.directory_score.category_scores
+            },
+            "validation_results": {
+                p: {
+                    "is_valid": val.is_valid,
+                    "material_changes": [
+                        {
+                            "change_type": c.change_type,
+                            "severity": c.severity,
+                            "explanation": c.explanation,
+                        }
+                        for c in val.material_changes
+                    ],
+                }
+                for p, val in validation_results.items()
+            },
+            "diffs": diffs,
+        }
+        summary_text = json.dumps(comp_dict, indent=2)
+    else:
+        summary_text = format_comparison_summary(
+            before_report=before_report,
+            after_report=after_report,
+            files_changed=files_changed,
+            diffs=diffs,
+            validation_results=validation_results,
+            output_dir=args.revised_dir,
+        )
 
-    if args.diff and diffs:
-        summary_text += "\n\nFile Diffs:\n" + ("=" * 40) + "\n"
-        for p, d in diffs.items():
-            summary_text += f"\n--- {p} ---\n{d}\n"
+        if args.diff and diffs:
+            summary_text += "\n\nFile Diffs:\n" + ("=" * 40) + "\n"
+            for p, d in diffs.items():
+                summary_text += f"\n--- {p} ---\n{d}\n"
 
     if args.output_report:
         out_p = Path(args.output_report)
         out_p.parent.mkdir(parents=True, exist_ok=True)
         out_p.write_text(summary_text, encoding="utf-8")
-        print(f"Comparison report written to: {out_p.resolve()}")
+        if getattr(args, "format", "text") != "json":
+            print(f"Comparison report written to: {out_p.resolve()}")
     else:
         print(summary_text)
 
@@ -429,6 +536,8 @@ def build_parser() -> argparse.ArgumentParser:
     imp_p.add_argument("--preview", action="store_true", help="Preview proposed edits without writing files")
     imp_p.add_argument("--diff", action="store_true", help="Display full unified diff of changes")
     imp_p.add_argument("--config", help="Path to custom config YAML")
+    imp_p.add_argument("--format", choices=["text", "json"], default="text", help="Output format (text, json)")
+    imp_p.add_argument("--output-report", help="File path to save editorial improvement report (JSON)")
     imp_p.add_argument("--llm", action="store_true", help="Use OpenRouter LLM for contextual rewriting")
     imp_p.add_argument("--mode", choices=["conservative", "balanced"], default="balanced", help="LLM editing mode (default: balanced)")
     imp_p.add_argument("--model", help="LLM rewriting model (e.g. deepseek/deepseek-chat)")
@@ -442,6 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_p.add_argument("original_dir", help="Original Markdown directory")
     cmp_p.add_argument("revised_dir", help="Revised Markdown directory")
     cmp_p.add_argument("--config", help="Path to custom config YAML")
+    cmp_p.add_argument("--format", choices=["text", "json", "markdown", "md"], default="text", help="Output format")
     cmp_p.add_argument("--output-report", help="File path to save comparison report")
     cmp_p.add_argument("--diff", action="store_true", help="Include full unified diffs in output")
 

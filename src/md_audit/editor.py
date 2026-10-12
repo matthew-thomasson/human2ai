@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import difflib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .analyzers.deterministic import Finding
 from .llm import (
@@ -122,6 +122,8 @@ class EditorialResult:
     review: ReviewResult | None = None
     proposed_content: str = ""
     has_proposed_changes: bool = False
+    status: str = "unchanged"
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class EditorialEngine:
@@ -224,6 +226,32 @@ class EditorialEngine:
 
         is_safe = validation_res.is_valid and (review_result is None or review_result.decision == "Accept")
 
+        # Determine machine-readable status
+        if not has_proposed_changes:
+            status = "unchanged"
+        elif not validation_res.is_valid:
+            status = "safety_rejected"
+        elif review_result:
+            if review_result.decision == "Accept":
+                status = "accepted"
+            elif review_result.decision == "Reject":
+                status = "rejected"
+            elif review_result.decision == "Review manually":
+                status = "manual_review"
+            else:
+                status = "unreviewed"
+        else:
+            status = "accepted" if is_accepted else "rejected"
+
+        editor_usage = getattr(self.llm_editor, "last_usage", {}) if (use_llm and self.llm_editor) else {}
+        reviewer_usage = getattr(review_result, "usage", {}) if review_result else {}
+        total_tokens = editor_usage.get("total_tokens", 0) + reviewer_usage.get("total_tokens", 0)
+        combined_usage = {
+            "editor": editor_usage,
+            "reviewer": reviewer_usage,
+            "total_tokens": total_tokens,
+        }
+
         return EditorialResult(
             file_path=doc.path,
             original_content=original,
@@ -236,4 +264,6 @@ class EditorialEngine:
             review=review_result,
             proposed_content=proposed_text,
             has_proposed_changes=has_proposed_changes,
+            status=status,
+            usage=combined_usage,
         )

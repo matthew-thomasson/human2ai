@@ -331,3 +331,54 @@ def test_model_evaluator_long_document_chunking():
     assert any("in today's" in q for q in weakness_quotes)
     assert any("stands as a testament" in q for q in weakness_quotes)
 
+
+def test_cli_improve_machine_readable_json(tmp_path: Path, capsys):
+    """Verify that improve --format json and --output-report produce structured output."""
+    import json
+    report_file = tmp_path / "improve_report.json"
+    rev_dir = tmp_path / "rev_json"
+
+    ret = main([
+        "improve",
+        "fixtures/good_technical.md",
+        "--output", str(rev_dir),
+        "--format", "json",
+        "--output-report", str(report_file),
+    ])
+    assert ret == 0
+    captured = capsys.readouterr().out
+    data = json.loads(captured)
+    assert "summary" in data
+    assert "documents" in data
+    assert len(data["documents"]) == 1
+    assert data["documents"][0]["file"] == "good_technical.md"
+    assert data["documents"][0]["status"] == "unchanged"
+
+    # Verify report written to file
+    assert report_file.exists()
+    file_data = json.loads(report_file.read_text(encoding="utf-8"))
+    assert file_data["files_processed"] == 1
+
+
+def test_cli_compare_machine_readable_json(tmp_path: Path, capsys):
+    """Verify that compare --format json produces structured comparison data."""
+    import json
+    rev_dir = tmp_path / "rev_cmp"
+    main(["improve", "fixtures/good_technical.md", "--output", str(rev_dir)])
+    capsys.readouterr()  # Flush stdout from improve call
+
+    ret = main([
+        "compare",
+        "fixtures/good_technical.md",
+        str(rev_dir),
+        "--format", "json",
+    ])
+    assert ret == 0
+    captured = capsys.readouterr().out
+    data = json.loads(captured)
+    assert "scores" in data
+    assert "before" in data["scores"]
+    assert "after" in data["scores"]
+    assert "category_scores" in data
+
+

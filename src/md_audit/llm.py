@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import requests
@@ -25,6 +25,7 @@ class ReviewResult:
     meaning_changed: bool
     reviewer_model: str
     is_offline: bool = False
+    usage: dict[str, int] = field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +35,7 @@ class ReviewResult:
             "meaning_changed": self.meaning_changed,
             "reviewer_model": self.reviewer_model,
             "is_offline": self.is_offline,
+            "usage": self.usage,
         }
 
 
@@ -179,12 +181,14 @@ class LLMEditor:
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.offline_mode = offline_mode
         self.timeout = timeout
+        self.last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def rewrite(self, text: str, mode: str = "balanced") -> str:
         """
         Rewrite document with LLM. Splits long documents into sections,
         isolates code blocks/links, and reassembles output.
         """
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         mode = mode.lower() if mode in EDITOR_SYSTEM_PROMPTS else "balanced"
 
         if self.offline_mode:
@@ -245,6 +249,12 @@ class LLMEditor:
                         f"OpenRouter API error (HTTP {resp.status_code}): {resp.text}"
                     )
                 data = resp.json()
+                usage = data.get("usage", {})
+                if isinstance(usage, dict):
+                    self.last_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                    self.last_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                    self.last_usage["total_tokens"] += usage.get("total_tokens", 0)
+
                 sec_out = data["choices"][0]["message"]["content"]
                 # Strip any accidental wrapping ```markdown code fences emitted by the model
                 sec_out = re.sub(r"^```markdown\s*\n", "", sec_out, flags=re.IGNORECASE)
@@ -351,6 +361,12 @@ class LLMReviewer:
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             parsed = json.loads(content)
+            usage = data.get("usage", {})
+            usage_dict = {
+                "prompt_tokens": usage.get("prompt_tokens", 0) if isinstance(usage, dict) else 0,
+                "completion_tokens": usage.get("completion_tokens", 0) if isinstance(usage, dict) else 0,
+                "total_tokens": usage.get("total_tokens", 0) if isinstance(usage, dict) else 0,
+            }
 
             dec = parsed.get("decision", "Review manually")
             if dec not in {"Accept", "Reject", "Review manually"}:
@@ -363,6 +379,7 @@ class LLMReviewer:
                 meaning_changed=bool(parsed.get("meaning_changed", False)),
                 reviewer_model=self.model,
                 is_offline=False,
+                usage=usage_dict,
             )
         except Exception as e:
             # When reviewer is unavailable, flag as unreviewed rather than pretending it passed
