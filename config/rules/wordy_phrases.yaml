@@ -1,0 +1,59 @@
+# Rules for wordy, redundant, and needlessly verbose constructions
+# Sources: Vale style guides, Plain English guidelines
+version: 1
+category: language_clarity
+
+rules:
+  - id: clarity.wordy.in_order_to
+    severity: suggestion
+    pattern: "(?i)\\bin order to\\b"
+    message: "'in order to' is wordy filler."
+    suggestion: "Use 'to'."
+
+  - id: clarity.wordy.due_to_the_fact
+    severity: warning
+    pattern: "(?i)\\bdue to the fact that\\b"
+    message: "'due to the fact that' is unnecessarily verbose."
+    suggestion: "Use 'because'."
+
+  - id: clarity.wordy.has_the_ability_to
+    severity: suggestion
+    pattern: "(?i)\\b(?:has|have) the ability to\\b"
+    message: "'has the ability to' is wordy."
+    suggestion: "Use 'can'."
+
+  - id: clarity.wordy.is_indicative_of
+    severity: suggestion
+    pattern: "(?i)\\b(?:is|are|was|were) indicative of\\b"
+    message: "'is indicative of' is weak passive nominalization."
+    suggestion: "Use 'indicates' or 'shows'."
+
+  - id: clarity.wordy.at_this_point_in_time
+    severity: warning
+    pattern: "(?i)\\bat this point in time\\b"
+    message: "'at this point in time' is wordy padding."
+    suggestion: "Use 'now' or 'currently'."
+
+  - id: clarity.wordy.for_the_purpose_of
+    severity: suggestion
+    pattern: "(?i)\\bfor the purpose of\\b"
+    message: "'for the purpose of' is verbose."
+    suggestion: "Use 'for' or 'to'."
+
+  - id: clarity.wordy.in_the_event_that
+    severity: suggestion
+    pattern: "(?i)\\bin the event that\\b"
+    message: "'in the event that' is verbose."
+    suggestion: "Use 'if'."
+
+  - id: clarity.wordy.a_number_of
+    severity: suggestion
+    pattern: "(?i)\\ba (?:large|significant|substantial) number of\\b"
+    message: "'a large number of' is imprecise and wordy."
+    suggestion: "Use 'many' or give the exact count."
+
+  - id: clarity.wordy.serves_as
+    severity: suggestion
+    pattern: "(?i)\\bserves? as\\b"
+    message: "'serves as' is an unnecessary detour when 'is' or direct action suffices."
+    suggestion: "Use 'is' or describe what it does directly."

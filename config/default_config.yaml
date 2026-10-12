@@ -1,0 +1,58 @@
+# Default Configuration for md-audit
+app_name: "md-audit"
+version: "0.1.0"
+
+# Directories and patterns excluded from markdown scans
+exclusions:
+  - ".git"
+  - "node_modules"
+  - ".venv"
+  - "venv"
+  - "env"
+  - "__pycache__"
+  - "dist"
+  - "build"
+  - ".idea"
+  - ".vscode"
+  - "revised"
+  - "reports"
+  - "scratch"
+
+# Scoring weights across the 5 categories (must sum to 1.0)
+scoring_weights:
+  ai_patterns: 0.25
+  readability: 0.20
+  repetition: 0.20
+  language_clarity: 0.20
+  consistency: 0.15
+
+# Penalty deduction per finding per 1,000 words (normalized)
+penalty_weights:
+  error: 12.0
+  warning: 6.0
+  suggestion: 3.0
+
+# Readability & Burstiness parameters
+readability:
+  target_flesch_reading_ease: 60.0
+  min_burstiness_cv: 0.40  # Coefficient of variation for sentence length (std / mean)
+  optimal_sentence_length: 18.0
+
+# Optional Model-assisted critic configuration (OpenRouter / OpenAI compatible)
+model:
+  enabled: false
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1"
+  model: "openai/gpt-4o-mini"
+  api_key_env: "OPENROUTER_API_KEY"
+  temperature: 0.2
+  offline_mode: false
+
+# Semantic Preservation validation gates
+validation:
+  strict_numbers: true
+  strict_dates: true
+  strict_technical_requirements: true
+  strict_code_blocks: true
+  strict_urls: true
+  strict_markdown_structure: true
