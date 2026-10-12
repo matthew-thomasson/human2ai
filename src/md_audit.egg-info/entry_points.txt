@@ -1,2 +1,0 @@
-[console_scripts]
-md-audit = md_audit.cli:main

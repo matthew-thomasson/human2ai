@@ -43,8 +43,8 @@ A full comparative evaluation across maintenance status, dependencies, and rule 
 Clone the repository and install in editable mode:
 
 ```bash
-git clone https://github.com/ai2human/md-audit.git
-cd md-audit
+git clone https://github.com/matthew-thomasson/human2ai.git
+cd human2ai
 pip install -e .
 ```
 
