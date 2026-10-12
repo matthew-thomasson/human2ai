@@ -11,12 +11,20 @@ from typing import Sequence
 import yaml
 
 from . import __version__
+from .ai_style import generate_ai_style_assessment
 from .analyzers import (
     DeterministicAnalyzer,
     ModelEvaluator,
     analyze_burstiness,
     analyze_repetition,
 )
+from .analyzers.sections import (
+    extract_detailed_paragraphs,
+    extract_rolling_windows,
+    extract_sentences_with_lines,
+    split_sections_by_headings,
+)
+from .analyzers.structural import analyze_structural_signals
 from .editor import EditorialEngine
 from .llm import LLMEditor, LLMReviewer, ModelError
 from .reporting import (
@@ -92,6 +100,7 @@ def run_audit(
     doc_scores = []
     findings_by_file = {}
     diagnostics_by_file = {}
+    ai_style_assessments = {}
     model_evaluations = []
 
     model_evaluator = None
@@ -118,6 +127,23 @@ def run_audit(
 
         rule_findings.sort(key=lambda f: (f.line_number, f.column))
         findings_by_file[doc.path] = rule_findings
+
+        # Enhancement A: Multi-level Markdown structure analysis
+        sections = split_sections_by_headings(doc, findings=rule_findings)
+        paragraphs = extract_detailed_paragraphs(doc.prose_lines)
+        sentences_with_lines = extract_sentences_with_lines(doc.prose_lines)
+        windows = extract_rolling_windows(sentences_with_lines, window_size=5)
+
+        # Enhancement B: Structural & formulaic writing signals
+        structural_signals = analyze_structural_signals(
+            doc, sections, paragraphs, windows, sentences_with_lines
+        )
+
+        # Enhancement C: Independent AI-style evidence profile
+        ai_style_profile = generate_ai_style_assessment(
+            doc, sections, paragraphs, windows, structural_signals
+        )
+        ai_style_assessments[doc.path] = ai_style_profile
 
         # Optional Model Evaluation
         doc_model_score = None
@@ -152,6 +178,15 @@ def run_audit(
             "burstiness_analyzer": burst_diag,
             "readability_analyzer": read_diag,
             "quality_scorer": score_diag,
+            "section_analyzer": {
+                "sections_count": len(sections),
+                "sections": [sec.to_dict() for sec in sections],
+                "paragraphs_count": len(paragraphs),
+                "paragraphs": [p.to_dict() for p in paragraphs],
+                "rolling_windows_count": len(windows),
+                "rolling_windows": [w.to_dict() for w in windows],
+            },
+            "ai_style_assessment": ai_style_profile,
         }
 
     dir_score = scorer.aggregate_directory(doc_scores)
@@ -173,6 +208,7 @@ def run_audit(
         config_summary=config,
         diagnostics_by_file=diagnostics_by_file,
         engine_diagnostics=engine_diagnostics,
+        ai_style_assessments=ai_style_assessments,
     )
 
 

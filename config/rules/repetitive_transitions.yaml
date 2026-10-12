@@ -6,13 +6,13 @@ category: repetition
 rules:
   - id: transition.moreover
     severity: warning
-    pattern: "(?i)^(?:\\s*|[-*]\\s+)Moreover,"
+    pattern: "(?i)(?:^|(?<=[.!?])\\s+|[-*]\\s+)Moreover,"
     message: "'Moreover' is an overused connective that flags stiff, academic or AI-generated prose."
     suggestion: "Omit or let the sentence stand on its own without a connective adverb."
 
   - id: transition.furthermore
     severity: warning
-    pattern: "(?i)^(?:\\s*|[-*]\\s+)Furthermore,"
+    pattern: "(?i)(?:^|(?<=[.!?])\\s+|[-*]\\s+)Furthermore,"
     message: "'Furthermore' is an overly formal transition frequently inserted by AI models."
     suggestion: "Delete 'Furthermore,' or use 'Also,' or combine the ideas."
 

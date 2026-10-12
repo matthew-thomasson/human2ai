@@ -18,7 +18,7 @@ rules:
 
   - id: ai.cliche.landscape
     severity: warning
-    pattern: "(?i)\\b(?:in\\s+the\\s+)?(?:rapidly\\s+evolving|ever-evolving|dynamic|modern)\\s+(?:digital\\s+)?landscape\\b"
+    pattern: "(?i)\\b(?:in\\s+the\\s+)?(?:rapidly\\s+evolving|ever-evolving|ever-changing|dynamic|modern)\\s+(?:digital\\s+)?landscape\\b"
     message: "'in the ... landscape' is generic throat-clearing fluff."
     suggestion: "Omit or name the specific market, industry, or technical domain."
 
@@ -42,7 +42,7 @@ rules:
 
   - id: ai.cliche.unlock_potential
     severity: warning
-    pattern: "(?i)\\bunlock(?:s|ed|ing)?\\s+(?:the\\s+)?(?:full\\s+)?potential\\b"
+    pattern: "(?i)\\bunlock(?:s|ed|ing)?\\s+(?:the|their|its|our|full|\\s*)*potential\\b"
     message: "'unlock potential' is marketing cliché."
     suggestion: "State the actual benefit, feature, or metric."
 
@@ -60,7 +60,7 @@ rules:
 
   - id: ai.cliche.leverage
     severity: warning
-    pattern: "(?i)\\bleverage(?:s|d|ing)?\\b"
+    pattern: "(?i)\\bleverag(?:e|es|ed|ing)\\b"
     message: "'leverage' as a verb is corporate AI-speak."
     suggestion: "Use 'use', 'apply', or 'build upon'."
 

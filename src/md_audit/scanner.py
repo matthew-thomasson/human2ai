@@ -293,3 +293,12 @@ def scan_directory(
 
     documents.sort(key=lambda doc: doc.path)
     return documents
+
+
+def scan_file(file_path: str | Path) -> ScannedDocument:
+    """Scan a single markdown file directly."""
+    docs = scan_directory(file_path)
+    if not docs:
+        raise ValueError(f"No valid markdown document found at {file_path}")
+    return docs[0]
+

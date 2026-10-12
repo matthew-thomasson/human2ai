@@ -36,6 +36,7 @@ class AuditReport:
     config_summary: dict[str, Any] | None = None
     diagnostics_by_file: dict[str, dict[str, Any]] = field(default_factory=dict)
     engine_diagnostics: dict[str, Any] = field(default_factory=dict)
+    ai_style_assessments: dict[str, Any] = field(default_factory=dict)
 
 
 def format_terminal_summary(report: AuditReport) -> str:
@@ -155,6 +156,27 @@ def format_markdown_report(report: AuditReport) -> str:
             lines.append("*No issues identified in this file.*")
             lines.append("")
 
+    if report.ai_style_assessments:
+        lines.append("## AI-Style Assessment (Independent Evidence Profile)")
+        lines.append("")
+        for file_path, assessment in report.ai_style_assessments.items():
+            lines.append(f"### `{file_path}`")
+            lines.append(f"> [!NOTE]")
+            lines.append(f"> {assessment.get('disclaimer', '')}")
+            lines.append("")
+            lines.append(f"- **Assessment Status:** `{assessment.get('status', 'unknown')}` (Authorship Determined: False)")
+            lines.append(f"- **Summary:** {assessment.get('summary', '')}")
+            present = [s for s in assessment.get("signals", []) if s.get("status") == "signal_present"]
+            if present:
+                lines.append("")
+                lines.append("| Signal ID | Name | Threshold | Key Observation / Supporting Text |")
+                lines.append("|---|---|---|---|")
+                for s in present:
+                    sup = s.get("supporting_text", [""])[0] if s.get("supporting_text") else ""
+                    clean_sup = sup.replace("|", "\\|").replace("\n", " ")
+                    lines.append(f"| `{s.get('signal_id')}` | {s.get('name')} | {s.get('threshold')} | {clean_sup} |")
+            lines.append("")
+
     if report.model_evaluations:
         lines.append("## Model-Assisted Critique (Independent Review)")
         lines.append("")
@@ -204,10 +226,16 @@ def format_json_report(report: AuditReport) -> dict[str, Any]:
                 "findings": [
                     f.to_dict() for f in report.findings_by_file.get(d.file_path, [])
                 ],
+                "ai_style_assessment": report.ai_style_assessments.get(
+                    d.file_path,
+                    report.diagnostics_by_file.get(d.file_path, {}).get("ai_style_assessment", {}),
+                ),
+                "sections": report.diagnostics_by_file.get(d.file_path, {}).get("section_analyzer", {}).get("sections", []),
                 "diagnostics": report.diagnostics_by_file.get(d.file_path, {}),
             }
             for d in report.document_scores
         ],
+        "ai_style_assessments": report.ai_style_assessments,
         "engine_diagnostics": report.engine_diagnostics,
         "model_evaluations": [
             m.to_dict() for m in (report.model_evaluations or [])
