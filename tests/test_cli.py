@@ -56,5 +56,5 @@ def test_cli_compare(tmp_path: Path, capsys):
     ret_cmp = main(["compare", "fixtures", str(revised_dir)])
     assert ret_cmp == 0
     captured = capsys.readouterr().out
-    assert "Writing Quality Comparison" in captured
+    assert "Markdown Quality Comparison" in captured
     assert "Semantic Preservation Audit:" in captured
