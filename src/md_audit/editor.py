@@ -120,6 +120,8 @@ class EditorialResult:
     is_safe: bool
     mode: str = "deterministic"
     review: ReviewResult | None = None
+    proposed_content: str = ""
+    has_proposed_changes: bool = False
 
 
 class EditorialEngine:
@@ -180,41 +182,58 @@ class EditorialEngine:
         # Preserve markdown line breaks without trailing spaces
         revised_text = "\n".join(line.rstrip() for line in revised_text.splitlines())
 
+        proposed_text = revised_text
+        has_proposed_changes = (proposed_text.strip() != original.strip())
+
         # 3. Deterministic Semantic Preservation Validation
-        validation_res = self.validator.validate(original, revised_text)
+        validation_res = self.validator.validate(original, proposed_text)
 
         # 4. Optional Independent LLM Review
-        if run_review and self.llm_reviewer and validation_res.is_valid and changes_count > 0:
-            review_result = self.llm_reviewer.review(original, revised_text)
-            if review_result.decision == "Reject":
-                # Reviewer rejected the proposed revision: retain original content
-                revised_text = original
-                changes_count = 0
+        # Run review only if changes were proposed and deterministic validation passed
+        if run_review and self.llm_reviewer and validation_res.is_valid and has_proposed_changes:
+            review_result = self.llm_reviewer.review(original, proposed_text)
 
-        # If semantic validation failed, reject changes
-        if not validation_res.is_valid:
-            revised_text = original
-            changes_count = 0
+        # A revision is accepted ONLY IF:
+        # - changes were proposed
+        # - deterministic preservation gate passed
+        # - if review was requested, reviewer explicitly decided "Accept"
+        is_accepted = (
+            has_proposed_changes
+            and validation_res.is_valid
+            and (not run_review or (review_result is not None and review_result.decision == "Accept"))
+        )
+
+        if is_accepted:
+            final_content = proposed_text
+            final_changes = changes_count
+        else:
+            # Retain original document if rejected, manual review recommended, unreviewed, or safety gate failed
+            final_content = original
+            final_changes = 0
 
         # Generate unified diff
         diff_lines = list(
             difflib.unified_diff(
                 original.splitlines(keepends=True),
-                revised_text.splitlines(keepends=True),
+                final_content.splitlines(keepends=True),
                 fromfile=f"a/{doc.path}",
                 tofile=f"b/{doc.path}",
             )
         )
         diff_str = "".join(diff_lines)
 
+        is_safe = validation_res.is_valid and (review_result is None or review_result.decision == "Accept")
+
         return EditorialResult(
             file_path=doc.path,
             original_content=original,
-            revised_content=revised_text,
+            revised_content=final_content,
             diff=diff_str,
             validation=validation_res,
-            changes_count=changes_count,
-            is_safe=validation_res.is_valid and (review_result is None or review_result.decision != "Reject"),
+            changes_count=final_changes,
+            is_safe=is_safe,
             mode=mode if use_llm else "deterministic",
             review=review_result,
+            proposed_content=proposed_text,
+            has_proposed_changes=has_proposed_changes,
         )

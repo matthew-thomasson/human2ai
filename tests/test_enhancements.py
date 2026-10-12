@@ -195,3 +195,139 @@ def test_cli_improve_llm_and_review(tmp_path: Path, capsys):
     assert "Engine mode: LLM (balanced) [offline-simulation]" in captured
     assert "Reviewer: Enabled" in captured
     assert "Editorial Summary:" in captured
+
+
+def test_reviewer_decisions_handling():
+    """Verify editorial handling for each reviewer decision: Accept, Reject, Review manually, Unreviewed."""
+    from md_audit.llm import ReviewResult
+
+    orig = "In order to test the pipeline, we utilize standard scripts."
+    doc = make_doc(orig)
+
+    class MockReviewer:
+        def __init__(self, decision: str):
+            self.decision = decision
+
+        def review(self, o, r):
+            return ReviewResult(
+                decision=self.decision,
+                reason=f"Mock decision: {self.decision}",
+                naturalness_improved=(self.decision == "Accept"),
+                meaning_changed=(self.decision != "Accept"),
+                reviewer_model="mock-reviewer",
+            )
+
+    # 1. Accept: revision accepted, improved text retained
+    engine_accept = EditorialEngine(llm_reviewer=MockReviewer("Accept"))
+    res_accept = engine_accept.improve_document(doc, run_review=True)
+    assert res_accept.is_safe
+    assert res_accept.changes_count > 0
+    assert "utilize" not in res_accept.revised_content
+    assert res_accept.review.decision == "Accept"
+
+    # 2. Reject: revision rejected, original content retained
+    engine_reject = EditorialEngine(llm_reviewer=MockReviewer("Reject"))
+    res_reject = engine_reject.improve_document(doc, run_review=True)
+    assert not res_reject.is_safe
+    assert res_reject.changes_count == 0
+    assert res_reject.revised_content == orig
+    assert res_reject.review.decision == "Reject"
+
+    # 3. Review manually: requires human approval, for MVP original content retained
+    engine_manual = EditorialEngine(llm_reviewer=MockReviewer("Review manually"))
+    res_manual = engine_manual.improve_document(doc, run_review=True)
+    assert not res_manual.is_safe
+    assert res_manual.changes_count == 0
+    assert res_manual.revised_content == orig
+    assert res_manual.review.decision == "Review manually"
+
+    # 4. Unreviewed: unreviewed verdict, original content retained
+    engine_unreviewed = EditorialEngine(llm_reviewer=MockReviewer("Unreviewed"))
+    res_unreviewed = engine_unreviewed.improve_document(doc, run_review=True)
+    assert not res_unreviewed.is_safe
+    assert res_unreviewed.changes_count == 0
+    assert res_unreviewed.revised_content == orig
+    assert res_unreviewed.review.decision == "Unreviewed"
+
+
+def test_mixed_folder_output_preservation_and_structure(tmp_path: Path, capsys):
+    """
+    Verify that EVERY input document is preserved in the revised output directory,
+    including accepted, unchanged, and nested subdirectory files.
+    """
+    input_dir = tmp_path / "mixed_input"
+    input_dir.mkdir()
+    (input_dir / "sub").mkdir()
+
+    # File 1: Has editorial improvements (will be revised)
+    (input_dir / "improve_me.md").write_text("In order to proceed, we utilize the CLI.", encoding="utf-8")
+    # File 2: Already clean prose (unchanged)
+    (input_dir / "clean.md").write_text("# Clean Title\n\nDirect active prose without cliches.", encoding="utf-8")
+    # File 3: Nested subdirectory document
+    (input_dir / "sub" / "nested.md").write_text("In the digital age, software evolves rapidly.", encoding="utf-8")
+
+    rev_dir = tmp_path / "rev_mixed"
+    ret = main(["improve", str(input_dir), "--output", str(rev_dir)])
+    assert ret == 0
+
+    # Verify all 3 files exist in revised directory
+    assert (rev_dir / "improve_me.md").exists()
+    assert (rev_dir / "clean.md").exists()
+    assert (rev_dir / "sub" / "nested.md").exists()
+
+    # Clean file must be preserved byte-for-byte
+    assert (rev_dir / "clean.md").read_text(encoding="utf-8") == (input_dir / "clean.md").read_text(encoding="utf-8")
+
+    # Improved file must contain improved prose
+    rev_content = (rev_dir / "improve_me.md").read_text(encoding="utf-8")
+    assert "To proceed" in rev_content or "use the CLI" in rev_content
+    assert "utilize" not in rev_content
+
+
+def test_compare_aborts_on_missing_files(tmp_path: Path, capsys):
+    """Verify that compare detects missing files, prints them, and exits with code 1."""
+    orig_dir = tmp_path / "orig_cmp"
+    orig_dir.mkdir()
+    (orig_dir / "doc1.md").write_text("# Doc 1", encoding="utf-8")
+    (orig_dir / "doc2.md").write_text("# Doc 2", encoding="utf-8")
+
+    rev_dir = tmp_path / "rev_cmp"
+    rev_dir.mkdir()
+    (rev_dir / "doc1.md").write_text("# Doc 1", encoding="utf-8")
+    # doc2.md is missing from revised directory!
+
+    ret = main(["compare", str(orig_dir), str(rev_dir)])
+    assert ret == 1
+    err = capsys.readouterr().err
+    assert "Missing files detected in revised directory!" in err
+    assert "doc2.md" in err
+
+
+def test_model_evaluator_long_document_chunking():
+    """Verify that ModelEvaluator evaluates complete long documents beyond 8,000 characters."""
+    from md_audit.analyzers.model_evaluator import ModelEvaluator
+
+    # Generate a long Markdown document (> 10,000 characters)
+    # Section 1 is ~9,500 characters of clean prose (past 8,000 char mark)
+    sec1 = "# Section 1\n\n" + ("This is an informative paragraph discussing systems architecture.\n\n" * 140)
+    # Section 2 is placed well beyond the 8,000 char mark and contains AI cliches
+    sec2 = "## Section 2: Technical Claims\n\nIn today's fast-paced digital landscape, this system stands as a testament to modern engineering.\n\n"
+    sec3 = "### Section 3: Summary\n\n" + ("The performance metrics confirm our low-latency design.\n\n" * 40)
+
+    full_text = sec1 + sec2 + sec3
+    assert len(full_text) > 10000
+    assert len(sec1) > 8000
+
+    doc = make_doc(full_text, path="long_doc.md")
+    evaluator = ModelEvaluator(offline_mode=True)
+    result = evaluator.evaluate(doc)
+
+    # Must be evaluated across multiple sections
+    assert "across" in result.critique_summary
+    assert "Section" in result.critique_summary
+
+    # Weaknesses beyond character 8,000 must be identified!
+    weakness_quotes = [w.quote for w in result.weaknesses]
+    assert any("in today's" in q for q in weakness_quotes)
+    assert any("stands as a testament" in q for q in weakness_quotes)
+

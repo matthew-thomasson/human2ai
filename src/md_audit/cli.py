@@ -254,6 +254,7 @@ def handle_improve(args: argparse.Namespace) -> int:
     improved_count = 0
     accepted_count = 0
     rejected_count = 0
+    manual_review_count = 0
     unreviewed_count = 0
 
     for doc in documents:
@@ -268,51 +269,54 @@ def handle_improve(args: argparse.Namespace) -> int:
             print(f"Error processing {doc.path} with LLM: {e}", file=sys.stderr)
             return 1
 
-        review_status = ""
-        if res.review:
+        content_to_write = doc.raw_content
+
+        if not res.has_proposed_changes:
+            print(f"[UNCHANGED] {doc.path} (already clean)")
+        elif not res.validation.is_valid:
+            # Deterministic preservation gate failed
+            rejected_count += 1
+            print(f"[REJECTED - SAFETY GATE] {doc.path}: Material changes detected.")
+            for change in res.validation.material_changes:
+                print(f"  - {change.change_type} ({change.severity}): {change.explanation}")
+        elif args.review and res.review:
             dec = res.review.decision
             if dec == "Accept":
                 accepted_count += 1
-                review_status = " [REVIEW: ACCEPTED]"
-            elif dec == "Reject":
-                rejected_count += 1
-                review_status = " [REVIEW: REJECTED]"
-            elif dec == "Review manually":
-                accepted_count += 1
-                review_status = " [REVIEW: MANUAL REVIEW RECOMMENDED]"
-            elif dec == "Unreviewed":
-                unreviewed_count += 1
-                review_status = " [REVIEW: UNREVIEWED]"
-
-        if res.changes_count > 0:
-            if res.is_safe:
                 improved_count += 1
-                print(f"[REVISED{review_status}] {doc.path}")
-                if res.review:
-                    print(f"  Review verdict: {res.review.decision} — {res.review.reason}")
+                content_to_write = res.revised_content
+                print(f"[REVISED [REVIEW: ACCEPTED]] {doc.path}")
+                print(f"  Review verdict: Accept — {res.review.reason}")
                 if args.preview or args.diff:
                     print(res.diff)
-                if not args.preview:
-                    dest_file = output_dir / doc.path
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    dest_file.write_text(res.revised_content, encoding="utf-8")
-            else:
+            elif dec == "Reject":
                 rejected_count += 1
-                print(f"[REJECTED{review_status}] {doc.path}: Material changes detected or rejected by reviewer.")
-                if res.review and res.review.decision == "Reject":
-                    print(f"  Reviewer reason: {res.review.reason}")
-                for change in res.validation.material_changes:
-                    print(f"  - {change.change_type} ({change.severity}): {change.explanation}")
+                print(f"[REJECTED [REVIEW: REJECTED]] {doc.path}")
+                print(f"  Review verdict: Reject — {res.review.reason}")
+            elif dec == "Review manually":
+                manual_review_count += 1
+                print(f"[MANUAL REVIEW REQUIRED] {doc.path}")
+                print(f"  Review verdict: Review manually — {res.review.reason}")
+            elif dec == "Unreviewed":
+                unreviewed_count += 1
+                print(f"[UNREVIEWED] {doc.path}")
+                print(f"  Review verdict: Unreviewed — {res.review.reason}")
+            else:
+                unreviewed_count += 1
+                print(f"[UNREVIEWED] {doc.path}")
+                print(f"  Review verdict: {dec} — {res.review.reason}")
         else:
-            if res.review and res.review.decision == "Reject":
-                print(f"[REJECTED BY REVIEWER] {doc.path}: {res.review.reason}")
-                rejected_count += 1
-            else:
-                print(f"[UNCHANGED] {doc.path} (already clean)")
-            if not args.preview:
-                dest_file = output_dir / doc.path
-                dest_file.parent.mkdir(parents=True, exist_ok=True)
-                dest_file.write_text(res.revised_content, encoding="utf-8")
+            # No review requested, safety gate passed
+            improved_count += 1
+            content_to_write = res.revised_content
+            print(f"[REVISED] {doc.path}")
+            if args.preview or args.diff:
+                print(res.diff)
+
+        if not args.preview:
+            dest_file = output_dir / doc.path
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
+            dest_file.write_text(content_to_write, encoding="utf-8")
 
     print("\nEditorial Summary:")
     print(f"  Files processed: {len(documents)}")
@@ -320,6 +324,7 @@ def handle_improve(args: argparse.Namespace) -> int:
     if args.review:
         print(f"  Accepted:        {accepted_count}")
         print(f"  Rejected:        {rejected_count}")
+        print(f"  Manual review:   {manual_review_count}")
         print(f"  Unreviewed:      {unreviewed_count}")
     if not args.preview:
         print(f"  Output saved to: {output_dir.resolve()}")
@@ -329,6 +334,18 @@ def handle_improve(args: argparse.Namespace) -> int:
 def handle_compare(args: argparse.Namespace) -> int:
     """Handler for 'md-audit compare <original-dir> <revised-dir>'."""
     config = load_config(args.config)
+
+    orig_docs = {d.path: d for d in scan_directory(args.original_dir, exclusions=config.get("exclusions"))}
+    rev_docs = {d.path: d for d in scan_directory(args.revised_dir, exclusions=config.get("exclusions"))}
+
+    missing_in_revised = [p for p in orig_docs if p not in rev_docs]
+    if missing_in_revised:
+        print("Comparison Error: Missing files detected in revised directory!", file=sys.stderr)
+        print("The following documents exist in the original directory but are missing from the revised directory:", file=sys.stderr)
+        for p in sorted(missing_in_revised):
+            print(f"  - {p}", file=sys.stderr)
+        print("\nComparison aborted: revised directory is incomplete.", file=sys.stderr)
+        return 1
 
     before_report = run_audit(args.original_dir, config=config)
     after_report = run_audit(args.revised_dir, config=config)

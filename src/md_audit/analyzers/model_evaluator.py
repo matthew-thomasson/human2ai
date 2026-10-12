@@ -10,7 +10,7 @@ from typing import Any
 
 import requests
 
-from ..llm import ModelError
+from ..llm import ModelError, split_markdown_sections
 from ..scanner import ScannedDocument
 
 
@@ -96,13 +96,24 @@ class ModelEvaluator:
         self.timeout = timeout
 
     def evaluate(self, doc: ScannedDocument) -> ModelEvaluationResult:
-        """Evaluate a document using the model critic or offline heuristic evaluator."""
+        """
+        Evaluate a complete document using the model critic or offline heuristic evaluator.
+        Reuses heading-based chunking to support long documents without truncation.
+        """
+        chunks = split_markdown_sections(doc.raw_content, max_chars=6000)
+
         if self.offline_mode:
-            return self._evaluate_offline(doc)
+            chunk_results = [
+                self._evaluate_chunk_offline(chunk, doc.path, idx, len(chunks))
+                for idx, chunk in enumerate(chunks, 1)
+            ]
+            return self._combine_evaluations(
+                doc.path, chunk_results, f"{self.model} (offline-simulation)", is_offline=True
+            )
 
-        return self._evaluate_online(doc)
+        return self._evaluate_online(doc, chunks)
 
-    def _evaluate_online(self, doc: ScannedDocument) -> ModelEvaluationResult:
+    def _evaluate_online(self, doc: ScannedDocument, chunks: list[str]) -> ModelEvaluationResult:
         if not self.api_key:
             raise ModelError(
                 "OPENROUTER_API_KEY is not set. Set the environment variable OPENROUTER_API_KEY "
@@ -116,59 +127,70 @@ class ModelEvaluator:
             "X-Title": "Markdown Quality Auditor",
         }
 
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Please evaluate this Markdown document:\n\n{doc.raw_content[:8000]}"},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.2,
-        }
+        chunk_results: list[ModelEvaluationResult] = []
 
-        try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            if resp.status_code != 200:
-                raise ModelError(f"OpenRouter API error (HTTP {resp.status_code}): {resp.text}")
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
+        for idx, chunk in enumerate(chunks, 1):
+            sec_header = f" (Section {idx}/{len(chunks)})" if len(chunks) > 1 else ""
+            user_content = f"Please evaluate this Markdown document{sec_header}:\n\n{chunk}"
 
-            weaknesses = [
-                ModelWeakness(
-                    aspect=w.get("aspect", "general"),
-                    quote=w.get("quote", ""),
-                    feedback=w.get("feedback", ""),
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.2,
+            }
+
+            try:
+                resp = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
                 )
-                for w in parsed.get("identified_weaknesses", [])
-            ]
+                if resp.status_code != 200:
+                    raise ModelError(f"OpenRouter API error (HTTP {resp.status_code}): {resp.text}")
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                parsed = json.loads(content)
 
-            return ModelEvaluationResult(
-                file_path=doc.path,
-                overall_score=int(parsed.get("overall_model_score", 75)),
-                naturalness_score=int(parsed.get("naturalness_score", 75)),
-                clarity_score=int(parsed.get("clarity_score", 75)),
-                coherence_score=int(parsed.get("coherence_score", 75)),
-                technical_precision_score=int(parsed.get("technical_precision_score", 75)),
-                critique_summary=parsed.get("critique_summary", "Evaluation complete."),
-                weaknesses=weaknesses,
-                is_offline=False,
-                model_identifier=self.model,
-            )
-        except requests.RequestException as e:
-            raise ModelError(f"Network error connecting to OpenRouter: {e}") from e
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            raise ModelError(f"Unexpected response format from model {self.model}: {e}") from e
+                weaknesses = [
+                    ModelWeakness(
+                        aspect=w.get("aspect", "general"),
+                        quote=w.get("quote", ""),
+                        feedback=w.get("feedback", ""),
+                    )
+                    for w in parsed.get("identified_weaknesses", [])
+                ]
 
-    def _evaluate_offline(self, doc: ScannedDocument) -> ModelEvaluationResult:
-        """Deterministic offline mock / heuristic critic for repeatable local runs and testing."""
-        content = doc.prose_content.lower()
+                chunk_results.append(
+                    ModelEvaluationResult(
+                        file_path=doc.path,
+                        overall_score=int(parsed.get("overall_model_score", 75)),
+                        naturalness_score=int(parsed.get("naturalness_score", 75)),
+                        clarity_score=int(parsed.get("clarity_score", 75)),
+                        coherence_score=int(parsed.get("coherence_score", 75)),
+                        technical_precision_score=int(parsed.get("technical_precision_score", 75)),
+                        critique_summary=parsed.get("critique_summary", "Evaluation complete."),
+                        weaknesses=weaknesses,
+                        is_offline=False,
+                        model_identifier=self.model,
+                    )
+                )
+            except requests.RequestException as e:
+                raise ModelError(f"Network error connecting to OpenRouter: {e}") from e
+            except (KeyError, IndexError, json.JSONDecodeError) as e:
+                raise ModelError(f"Unexpected response format from model {self.model}: {e}") from e
 
+        return self._combine_evaluations(doc.path, chunk_results, self.model, is_offline=False)
+
+    def _evaluate_chunk_offline(
+        self, chunk: str, file_path: str, chunk_index: int = 1, total_chunks: int = 1
+    ) -> ModelEvaluationResult:
+        """Deterministic offline evaluation of a single document chunk."""
+        content = chunk.lower()
         weaknesses: list[ModelWeakness] = []
         score = 85
 
@@ -204,16 +226,70 @@ class ModelEvaluator:
             )
 
         score = max(35, min(98, score))
+        summary = "Offline simulated evaluation based on structural and rhetorical analysis."
+        if total_chunks > 1:
+            summary = f"Section {chunk_index}/{total_chunks}: {summary}"
 
         return ModelEvaluationResult(
-            file_path=doc.path,
+            file_path=file_path,
             overall_score=score,
             naturalness_score=score,
             clarity_score=min(100, score + 5),
             coherence_score=min(100, score + 4),
             technical_precision_score=score,
-            critique_summary="Offline simulated evaluation based on structural and rhetorical analysis.",
+            critique_summary=summary,
             weaknesses=weaknesses,
             is_offline=True,
             model_identifier=f"{self.model} (offline-simulation)",
+        )
+
+    def _combine_evaluations(
+        self,
+        file_path: str,
+        chunk_results: list[ModelEvaluationResult],
+        model_identifier: str,
+        is_offline: bool,
+    ) -> ModelEvaluationResult:
+        """Combine section-level evaluations into a unified document-level result."""
+        if not chunk_results:
+            return ModelEvaluationResult(
+                file_path=file_path,
+                overall_score=75,
+                naturalness_score=75,
+                clarity_score=75,
+                coherence_score=75,
+                technical_precision_score=75,
+                critique_summary="No content evaluated.",
+                weaknesses=[],
+                is_offline=is_offline,
+                model_identifier=model_identifier,
+            )
+
+        if len(chunk_results) == 1:
+            return chunk_results[0]
+
+        n = len(chunk_results)
+        avg_overall = round(sum(r.overall_score for r in chunk_results) / n)
+        avg_nat = round(sum(r.naturalness_score for r in chunk_results) / n)
+        avg_clarity = round(sum(r.clarity_score for r in chunk_results) / n)
+        avg_coherence = round(sum(r.coherence_score for r in chunk_results) / n)
+        avg_prec = round(sum(r.technical_precision_score for r in chunk_results) / n)
+
+        all_weaknesses: list[ModelWeakness] = []
+        summary_lines = [f"Complete document evaluated across {n} sections:"]
+        for idx, r in enumerate(chunk_results, 1):
+            summary_lines.append(f"- Section {idx}: {r.critique_summary}")
+            all_weaknesses.extend(r.weaknesses)
+
+        return ModelEvaluationResult(
+            file_path=file_path,
+            overall_score=avg_overall,
+            naturalness_score=avg_nat,
+            clarity_score=avg_clarity,
+            coherence_score=avg_coherence,
+            technical_precision_score=avg_prec,
+            critique_summary="\n".join(summary_lines),
+            weaknesses=all_weaknesses,
+            is_offline=is_offline,
+            model_identifier=model_identifier,
         )

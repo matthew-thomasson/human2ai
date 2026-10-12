@@ -133,8 +133,8 @@ def restore_markdown_elements(
 
 def split_markdown_sections(text: str, max_chars: int = 4000) -> list[str]:
     """
-    Split long Markdown documents into sensible sections by heading boundaries (# or ##),
-    avoiding silent truncation on long files.
+    Split long Markdown documents into sensible sections by heading boundaries (# or ##)
+    or paragraph boundaries, avoiding silent truncation on long files while preserving content.
     """
     if len(text) <= max_chars:
         return [text]
@@ -146,9 +146,10 @@ def split_markdown_sections(text: str, max_chars: int = 4000) -> list[str]:
 
     for line in lines:
         is_heading = bool(re.match(r"^#{1,3}\s+", line))
+        is_blank = not line.strip()
         line_len = len(line)
 
-        if is_heading and current_length >= max_chars and current_chunk:
+        if current_chunk and ((is_heading and current_length >= max_chars) or (is_blank and current_length >= max_chars)):
             sections.append("".join(current_chunk))
             current_chunk = [line]
             current_length = line_len

@@ -1,17 +1,18 @@
 # Markdown Writing Quality Auditor (`md-audit`) — Enhanced POC
 
-> **A practical local Markdown writing-quality tool** that audits documentation for synthetic AI patterns, provides an explainable 0–100 quality score, offers optional contextual LLM rewriting, supports an independent secondary reviewer, and guarantees strict semantic preservation.
+> **A practical local Markdown writing-quality tool** that audits documentation for synthetic AI patterns, provides an explainable 0–100 quality score, offers optional contextual LLM rewriting, supports an independent secondary reviewer, and enforces deterministic semantic preservation checks.
 
 ---
 
 ## 1. Key Capabilities
 
-1. **Local Markdown Quality Audit (`scan`)**: Recursively discovers Markdown files, detects formulaic AI clichés, analyzes sentence rhythm (burstiness), checks repetition and passive voice, and calculates a length-normalized 0–100 quality score.
-2. **Contextual LLM Rewriting (`improve --llm`)**: Understands document context to eliminate fluff, improve natural flow, and remove AI idioms without altering meaning. Supports **Conservative** and **Balanced** editing modes. Automatically chunks long files by Markdown headings to avoid truncation.
+1. **Local Markdown Quality Audit (`scan`)**: Recursively discovers Markdown files, detects formulaic AI clichés, analyzes sentence rhythm (burstiness), checks repetition and passive voice, and calculates a length-normalized 0–100 quality score. Supports complete document evaluation for long files via heading-based chunking.
+2. **Contextual LLM Rewriting (`improve --llm`)**: Understands document context to eliminate fluff, improve natural flow, and remove AI idioms without altering meaning. Supports **Conservative** and **Balanced** editing modes. Automatically chunks long files by Markdown headings and paragraph boundaries to prevent truncation.
 3. **Deterministic Editorial Mode (`improve`)**: Fast, zero-dependency local substitutions with dynamic casing preservation and safe clause handling.
-4. **Independent Model Reviewer (`--review`)**: A second configurable model (e.g., Qwen evaluating DeepSeek's rewrites) verifies whether naturalness improved and whether any technical meaning changed, issuing **Accept**, **Reject**, or **Review manually** decisions. If the reviewer is unavailable, edits are marked **Unreviewed**.
-5. **Deterministic Semantic Preservation Gate**: Protected-span validator verifying numbers, dates, RFC-2119 keywords, code blocks, URLs, and Markdown structure. Material changes cause automated rejection.
-6. **Rescoring & Comparison (`compare`)**: Side-by-side delta reporting showing score gains, resolved issues, reviewer decisions, and unified diffs.
+4. **Independent Model Reviewer (`--review`)**: A second configurable model (e.g., Qwen evaluating DeepSeek's rewrites) verifies whether naturalness improved and whether technical meaning changed, issuing **Accept**, **Reject**, or **Review manually** decisions. If the reviewer is unavailable, edits are marked **Unreviewed**.
+5. **Deterministic Semantic Preservation Gate**: Protected-span validator checking numbers, dates, RFC-2119 keywords, code blocks, URLs, and Markdown structure. Material changes trigger automated rejection.
+6. **Complete Document Retention**: Every input Markdown document and directory hierarchy is preserved in the revised output directory. Accepted revisions contain improved text, while unchanged, rejected, manual-review, and unreviewed documents retain their original content.
+7. **Rescoring & Comparison (`compare`)**: Side-by-side delta reporting showing score gains, resolved issues, reviewer decisions, and unified diffs. Incomplete revised directories with missing files are flagged with an error.
 
 ---
 
@@ -49,7 +50,7 @@ md-audit scan ./docs
 md-audit scan ./docs --format markdown --output-report ./reports/audit.md
 md-audit scan ./docs --format json --output-report ./reports/audit.json
 
-# Optional model-assisted critique (independent critic)
+# Optional model-assisted critique (evaluates entire long documents via chunking)
 md-audit scan ./docs --model-eval
 md-audit scan ./docs --model-eval --offline   # Offline test simulation mode
 ```
@@ -65,7 +66,7 @@ Applies safe substitutions (removing wordy filler like "in order to" $\rightarro
 # Preview diff without writing files
 md-audit improve ./docs --preview --diff
 
-# Write revised files to a separate output directory
+# Write revised files to an output directory (retains all documents and directory structure)
 md-audit improve ./docs --output ./revised
 ```
 
@@ -97,7 +98,23 @@ md-audit improve ./docs \
 md-audit improve ./docs --llm --review --offline --output ./revised
 ```
 
-If the reviewer rejects a change, the original passage is retained and the rejection reason is logged. If the reviewer is unavailable, the edit is flagged as **Unreviewed**.
+##### Reviewer Verdicts & Handling:
+- **Accept**: The reviewer approved the revision and all preservation checks passed. The revised text is written to the output directory.
+- **Reject**: The reviewer rejected the change. The original document is retained unchanged in the output directory.
+- **Review manually**: The reviewer identified potential ambiguity requiring human editorial approval. For this MVP, the original document is retained unchanged in the output directory and counted separately.
+- **Unreviewed**: The reviewer was not reachable or skipped. The original document is retained unchanged and explicitly reported.
+
+Summary counts are reported without double-counting:
+```text
+Editorial Summary:
+  Files processed: 5
+  Files improved:  2
+  Accepted:        2
+  Rejected:        1
+  Manual review:   1
+  Unreviewed:      0
+  Output saved to: ./revised
+```
 
 ---
 
@@ -108,6 +125,8 @@ Compares the original directory against revised files:
 md-audit compare ./docs ./revised
 md-audit compare ./docs ./revised --diff --output-report ./reports/comparison.md
 ```
+
+If any document present in the original directory is missing from the revised directory, `compare` aborts with exit code 1 and lists the missing files.
 
 #### Comparison Summary Format:
 ```text
@@ -122,10 +141,11 @@ AI-style patterns:
   Before: 65/100
   After:  91/100 (+26)
 Changes:
-  Accepted:   34
+  Accepted:   12
   Rejected:   3
-  Unreviewed: 2
-Technical preservation:
+  Manual review: 1
+  Unreviewed: 0
+Semantic Preservation Audit:
   No detected changes to protected elements.
 Output: ./revised
 ```
@@ -161,7 +181,7 @@ llm_editor:
   model: "deepseek/deepseek-chat"
   mode: "balanced"
   temperature: 0.3
-  chunk_threshold_chars: 4000
+  chunk_threshold_chars: 4500
 
 # Independent LLM Reviewer
 reviewer:
@@ -180,7 +200,7 @@ validation:
   strict_markdown_structure: true
 ```
 
-Set your OpenRouter API key:
+Set your OpenRouter API key for online mode:
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
 # Or on Windows PowerShell:
@@ -189,16 +209,16 @@ $env:OPENROUTER_API_KEY = "sk-or-v1-..."
 
 ---
 
-## 5. Semantic Preservation & Safety
+## 5. Semantic Preservation & Safety Checks
 
-The Semantic Preservation Gate (`src/md_audit/validation.py`) deterministically inspects every edit:
+The Semantic Preservation Gate (`src/md_audit/validation.py`) deterministically inspects every edit before acceptance:
 1. **Numbers:** All integers, decimals, percentages, port numbers, and units (`99.95%`, `port 8080`, `150ms`, `v2.4.1`) must remain identical in value and count.
 2. **Dates & Deadlines:** ISO and textual dates (`2026-11-15`, `October 20, 2026`) must be preserved.
 3. **RFC-2119 Keywords:** Requirements (`MUST`, `MUST NOT`, `SHALL`, `REQUIRED`, `SHOULD`) cannot be dropped or weakened.
 4. **Code Blocks & Inline Code:** Fenced blocks (`` ``` ``) and inline backticks (`` `identifier` ``) are isolated with token placeholders and verified byte-for-byte.
 5. **Links & Tables:** Target URLs and table structures cannot be corrupted.
 
-Any violation triggers immediate rejection with file and line diagnostics.
+Any violation triggers automated rejection with file and line diagnostics, and the original file is preserved.
 
 ---
 
@@ -210,12 +230,14 @@ Run the automated test suite with pytest:
 pytest -vv
 ```
 
-All 37 unit and integration tests execute in under 0.5s:
+All 41 unit and integration tests execute in under 0.6s:
 - Safe regex substitutions & casing preservation
 - Markdown preservation (code fences, inline code, links, tables)
 - Model API failure handling (raising `ModelError` explicitly without silent mock fallback)
 - Independent reviewer decisions (Accept, Reject, Review manually, Unreviewed)
-- Long document section splitting
+- Output directory 100% file retention (accepted, rejected, manual review, unchanged, nested folders)
+- Missing file detection in `compare`
+- Full long-document chunking and evaluation beyond 8,000 characters
 - Portability of bundled configuration and rules
 - End-to-end `scan`, `improve`, and `compare` workflows
 
@@ -225,4 +247,6 @@ All 37 unit and integration tests execute in under 0.5s:
 
 - **Personal Local Tool:** Designed for developers auditing Markdown documentation locally or in CI scripts.
 - **CommonMark / GFM:** Tailored for standard GitHub Flavored Markdown.
+- **Model Credentials:** Online model evaluation and rewriting require a user-provided `OPENROUTER_API_KEY`. Without an API key, online commands fail with explicit errors. Use `--offline` for local simulation testing.
 - **Cost Efficiency:** Deterministic mode incurs $0.00. LLM rewriting and review runs on OpenRouter with economical models (~$0.01 per 25,000 words).
+
